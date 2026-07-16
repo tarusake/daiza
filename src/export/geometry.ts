@@ -24,11 +24,27 @@ export const EXPORT_COLORS = {
   contour: '#374151',
   /** 差込部（首部・ツメ）。 */
   slot: '#2563eb',
+  /** 台座に切る差込口。 */
+  baseSlot: '#2563eb',
   /** 台座。 */
   base: '#16a34a',
   /** 面付け・裁ち落とし確認用の枠。 */
   frame: '#111827',
 } as const;
+
+export const RED_CUTLINE_COLORS = {
+  ...EXPORT_COLORS,
+  contour: '#ff0000',
+  baseSlot: '#ff0000',
+  base: '#ff0000',
+  frame: '#ff0000',
+} as const satisfies Record<keyof typeof EXPORT_COLORS, string>;
+
+export function exportColors(
+  redCutLinesOnly: boolean,
+): Record<keyof typeof EXPORT_COLORS, string> {
+  return redCutLinesOnly ? RED_CUTLINE_COLORS : EXPORT_COLORS;
+}
 
 /** A4 縦置きの実寸(mm)。 */
 export const A4_PAGE_MM = { width: 210, height: 297 } as const;

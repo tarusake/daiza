@@ -20,6 +20,7 @@ export interface ExportSettings {
   includeFrame: boolean;
   framePaddingMm: number;
   imposeA4: boolean;
+  redCutLinesOnly: boolean;
 }
 
 export interface ExportPanelProps {
@@ -147,6 +148,21 @@ export function ExportPanel({
             {...(previewImageHref !== undefined ? { imageHref: previewImageHref } : {})}
           />
         )}
+
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="export-red-cut-lines-only"
+            checked={settings.redCutLinesOnly}
+            onCheckedChange={(checked) => updateSettings({ redCutLinesOnly: checked === true })}
+            disabled={exporting}
+          />
+          <Label
+            htmlFor="export-red-cut-lines-only"
+            className="text-muted-foreground text-sm font-normal"
+          >
+            カットラインのみ赤で出力する
+          </Label>
+        </div>
 
         {/* SVG 生成（実寸座標系）は onExportSvg に委ねる。解析結果が無ければ無効。 */}
         <Button

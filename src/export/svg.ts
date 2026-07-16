@@ -13,7 +13,7 @@
 
 import {
   buildExportGeometry,
-  EXPORT_COLORS,
+  exportColors,
   fmt,
   type ExportGeometry,
   type RectMm,
@@ -38,6 +38,8 @@ export interface SvgExportOptions {
   framePaddingMm?: number;
   /** A4 縦置きページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** カットラインだけを赤で出すか。 */
+  redCutLinesOnly?: boolean;
 }
 
 function tilePoint(geometry: ExportGeometry, offset: Point, point: Point): Point {
@@ -115,6 +117,8 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
     ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
   });
   const { viewBox } = geometry;
+  const redCutLinesOnly = options.redCutLinesOnly === true;
+  const colors = exportColors(redCutLinesOnly);
 
   const strokeAttr = `stroke-width="${fmt(strokeWidthMm(viewBox))}"`;
   const viewBoxAttr = `${fmt(viewBox.x)} ${fmt(viewBox.y)} ${fmt(viewBox.width)} ${fmt(viewBox.height)}`;
@@ -128,39 +132,42 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
     const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
     const contourEl = pathElement(
       closedCurvePathData(contour, fmt, { sharpCorners }),
-      `fill="none" stroke="${EXPORT_COLORS.contour}" ${strokeAttr}`,
+      `fill="none" stroke="${colors.contour}" ${strokeAttr}`,
     );
-    const neckEl = pathElement(
-      rectPathForTile(geometry, offset, geometry.neck),
-      `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
-    );
-    const tabEl = pathElement(
-      rectPathForTile(geometry, offset, geometry.tab),
-      `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
-    );
+    const slotElements = redCutLinesOnly
+      ? []
+      : [
+          pathElement(
+            rectPathForTile(geometry, offset, geometry.neck),
+            `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
+          ),
+          pathElement(
+            rectPathForTile(geometry, offset, geometry.tab),
+            `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
+          ),
+        ];
     // 台座は「台座形状」で選んだ footprint の上面図。矩形以外も曲線コマンドで出力する。
     const baseCurve = mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p));
     const baseEl = pathElement(
       curvePathData(baseCurve, fmt),
-      `fill="none" stroke="${EXPORT_COLORS.base}" ${strokeAttr}`,
+      `fill="none" stroke="${colors.base}" ${strokeAttr}`,
     );
     const baseSlotEl = pathElement(
       rectPathForTile(geometry, offset, geometry.baseSlot),
-      `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
+      `fill="none" stroke="${colors.baseSlot}" ${strokeAttr}`,
     );
     const frameEl =
       geometry.frame !== undefined
         ? pathElement(
             rectPathForTile(geometry, offset, geometry.frame),
-            `fill="none" stroke="${EXPORT_COLORS.frame}" ${strokeAttr}`,
+            `fill="none" stroke="${colors.frame}" ${strokeAttr}`,
           )
         : undefined;
 
     return [
       ...(imageHref !== undefined ? [imageElement(geometry, imageHref, offset)] : []),
       contourEl,
-      neckEl,
-      tabEl,
+      ...slotElements,
       baseEl,
       baseSlotEl,
       ...(frameEl !== undefined ? [frameEl] : []),

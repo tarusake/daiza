@@ -9,7 +9,7 @@ import { useMemo } from 'react';
 import {
   A4_PAGE_MM,
   buildExportGeometry,
-  EXPORT_COLORS,
+  exportColors,
   fmt,
   strokeWidthMm,
   type ExportGeometry,
@@ -22,6 +22,7 @@ export interface ImpositionPreviewSettings {
   partGapMm: number;
   includeFrame: boolean;
   framePaddingMm: number;
+  redCutLinesOnly: boolean;
 }
 
 export interface ImpositionPreviewProps {
@@ -94,6 +95,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
   }
 
   const strokeWidth = strokeWidthMm(geometry.viewBox);
+  const colors = exportColors(settings.redCutLinesOnly);
   const viewBox = `${fmt(geometry.viewBox.x)} ${fmt(geometry.viewBox.y)} ${fmt(
     geometry.viewBox.width,
   )} ${fmt(geometry.viewBox.height)}`;
@@ -134,33 +136,37 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                 )}
                 <path
                   d={closedCurvePathData(contour, fmt, { sharpCorners })}
-                  stroke={EXPORT_COLORS.contour}
+                  stroke={colors.contour}
                   strokeWidth={strokeWidth}
                 />
-                <path
-                  d={rectPathForTile(geometry, offset, geometry.neck)}
-                  stroke={EXPORT_COLORS.slot}
-                  strokeWidth={strokeWidth}
-                />
-                <path
-                  d={rectPathForTile(geometry, offset, geometry.tab)}
-                  stroke={EXPORT_COLORS.slot}
-                  strokeWidth={strokeWidth}
-                />
+                {!settings.redCutLinesOnly && (
+                  <>
+                    <path
+                      d={rectPathForTile(geometry, offset, geometry.neck)}
+                      stroke={colors.slot}
+                      strokeWidth={strokeWidth}
+                    />
+                    <path
+                      d={rectPathForTile(geometry, offset, geometry.tab)}
+                      stroke={colors.slot}
+                      strokeWidth={strokeWidth}
+                    />
+                  </>
+                )}
                 <path
                   d={curvePathData(baseCurve, fmt)}
-                  stroke={EXPORT_COLORS.base}
+                  stroke={colors.base}
                   strokeWidth={strokeWidth}
                 />
                 <path
                   d={rectPathForTile(geometry, offset, geometry.baseSlot)}
-                  stroke={EXPORT_COLORS.slot}
+                  stroke={colors.baseSlot}
                   strokeWidth={strokeWidth}
                 />
                 {geometry.frame !== undefined && (
                   <path
                     d={rectPathForTile(geometry, offset, geometry.frame)}
-                    stroke={EXPORT_COLORS.frame}
+                    stroke={colors.frame}
                     strokeWidth={strokeWidth}
                   />
                 )}

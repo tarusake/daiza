@@ -15,7 +15,7 @@
 
 import type { PDFName as PDFNameObject } from 'pdf-lib';
 
-import { buildExportGeometry, EXPORT_COLORS, strokeWidthMm } from '@/export/geometry';
+import { buildExportGeometry, exportColors, strokeWidthMm } from '@/export/geometry';
 import type { ExportGeometry, RectMm } from '@/export/geometry';
 import type { AnalysisResult, Point } from '@/model/types';
 import { closedCurvePathData, curvePathData, mapCurve } from '@/utils/curve';
@@ -38,6 +38,8 @@ export interface AiExportOptions {
   framePaddingMm?: number;
   /** A4 縦置きページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** カットラインだけを赤で出すか。 */
+  redCutLinesOnly?: boolean;
 }
 
 /**
@@ -109,6 +111,8 @@ export async function generateAi(
     ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
   });
   const { viewBox } = geometry;
+  const redCutLinesOnly = options.redCutLinesOnly === true;
+  const colors = exportColors(redCutLinesOnly);
 
   const pageWidth = viewBox.width * MM_TO_PT;
   const pageHeight = viewBox.height * MM_TO_PT;
@@ -254,12 +258,14 @@ export async function generateAi(
     for (const offset of geometry.tileOffsets) {
       // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
       const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
-      strokePath(curvePathData(basePath, fmtPt), EXPORT_COLORS.base);
-      strokePath(rectPathForTile(offset, geometry.neck), EXPORT_COLORS.slot);
-      strokePath(rectPathForTile(offset, geometry.tab), EXPORT_COLORS.slot);
-      strokePath(rectPathForTile(offset, geometry.baseSlot), EXPORT_COLORS.slot);
+      strokePath(curvePathData(basePath, fmtPt), colors.base);
+      if (!redCutLinesOnly) {
+        strokePath(rectPathForTile(offset, geometry.neck), colors.slot);
+        strokePath(rectPathForTile(offset, geometry.tab), colors.slot);
+      }
+      strokePath(rectPathForTile(offset, geometry.baseSlot), colors.baseSlot);
       if (geometry.frame !== undefined) {
-        strokePath(rectPathForTile(offset, geometry.frame), EXPORT_COLORS.frame);
+        strokePath(rectPathForTile(offset, geometry.frame), colors.frame);
       }
     }
   });
@@ -273,7 +279,7 @@ export async function generateAi(
       const sharpPt = geometry.sharpCorners.map((p) => toPt(tilePoint(offset, p), viewBox));
       strokePath(
         closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
-        EXPORT_COLORS.contour,
+        colors.contour,
       );
     }
   });

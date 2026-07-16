@@ -52,6 +52,7 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   includeFrame: false,
   framePaddingMm: 5,
   imposeA4: false,
+  redCutLinesOnly: false,
 };
 
 function App() {
@@ -152,6 +153,7 @@ function App() {
           includeFrame: exportSettings.includeFrame,
           framePaddingMm: exportSettings.framePaddingMm,
           imposeA4: exportSettings.imposeA4,
+          redCutLinesOnly: exportSettings.redCutLinesOnly,
         },
       );
       downloadBlob(
@@ -181,6 +183,7 @@ function App() {
             includeFrame: exportSettings.includeFrame,
             framePaddingMm: exportSettings.framePaddingMm,
             imposeA4: exportSettings.imposeA4,
+            redCutLinesOnly: exportSettings.redCutLinesOnly,
           },
         );
         downloadBlob(
