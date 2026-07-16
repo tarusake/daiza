@@ -26,7 +26,12 @@ export const EXPORT_COLORS = {
   slot: '#2563eb',
   /** 台座。 */
   base: '#16a34a',
+  /** 面付け・裁ち落とし確認用の枠。 */
+  frame: '#111827',
 } as const;
+
+/** A4 縦置きの実寸(mm)。 */
+export const A4_PAGE_MM = { width: 210, height: 297 } as const;
 
 /**
  * mm 値をファイル出力向けの短い文字列へ整える。
@@ -87,9 +92,22 @@ export interface ExportGeometry {
   baseSlot: RectMm;
   /** 絵柄画像を実寸で置く矩形（mm）。画像は解析と同じ左上原点なので常に原点始まり。 */
   image: RectMm;
+  /** 任意で追加する枠線（mm）。 */
+  frame?: RectMm;
+  /** 1 タイル分の外接。A4 面付けではこの寸法を基準に行列数を決める。 */
+  tileBounds: RectMm;
+  /** A4 面付け時に採用したタイル回転。数が多く入る 0度 / 90度を自動選択する。 */
+  tileRotationDeg: 0 | 90;
+  /** 面付け時の複製オフセット。通常出力では [{ x: 0, y: 0 }] の 1 要素。 */
+  tileOffsets: readonly Point[];
   /** 全要素を包む外接矩形に余白を足した領域（mm）。 */
   viewBox: RectMm;
 }
+
+type ExportGeometryBody = Omit<
+  ExportGeometry,
+  'tileBounds' | 'tileRotationDeg' | 'tileOffsets' | 'viewBox'
+>;
 
 /** buildExportGeometry の切り替え。 */
 export interface ExportGeometryOptions {
@@ -99,6 +117,14 @@ export interface ExportGeometryOptions {
    * 一方で画像は透明余白を持ち得る）ため、含める時だけ外接に加える。
    */
   includeImage: boolean;
+  /** 絵柄パーツと台座パーツの間隔(mm)。0 なら組み立て位置のまま重ねて出す。 */
+  partGapMm?: number;
+  /** 図形全体の外側に枠を付けるか。 */
+  includeFrame?: boolean;
+  /** 枠を付ける場合の図形から枠までの余白(mm)。 */
+  framePaddingMm?: number;
+  /** A4 縦置きページへ原寸で配置するか。 */
+  imposeA4?: boolean;
 }
 
 /**
@@ -153,7 +179,7 @@ export function buildExportGeometry(
     x: slot.centerXMm + p.x,
     y: baseOriginYMm + p.y,
   });
-  const baseFootprint: BaseFootprintMm = {
+  let baseFootprint: BaseFootprintMm = {
     curve: mapCurve(base.footprint.curve, toBaseMm),
     outline: base.footprint.polyline.map(toBaseMm),
     bounds: {
@@ -168,7 +194,7 @@ export function buildExportGeometry(
   // 中心は「台座の奥行原点 + 前後オフセット」（下方向が前）。base.ts がスリットの内包を
   // 検査済みなので、この矩形は必ず台座 footprint の内側に収まる。
   const slitCenterYMm = baseOriginYMm + slot.depthOffsetMm;
-  const baseSlotRect: RectMm = {
+  let baseSlotRect: RectMm = {
     x: slot.centerXMm - slot.widthMm / 2,
     y: slitCenterYMm - slot.tabDepthMm / 2,
     width: slot.widthMm,
@@ -183,24 +209,174 @@ export function buildExportGeometry(
     height: imageSize.height * mmPerPixel,
   };
 
-  const bounds = [
-    neckRect,
-    tabRect,
-    baseFootprint.bounds,
-    ...(options.includeImage ? [imageRect] : []),
-  ];
+  const partGapMm = Math.max(0, options.partGapMm ?? 0);
+  if (partGapMm > 0) {
+    const figureBounds = boundsFromGeometry(contourMm, [neckRect, tabRect]);
+    const baseDy = figureBounds.y + figureBounds.height + partGapMm - baseFootprint.bounds.y;
+    baseFootprint = translateBaseFootprint(baseFootprint, 0, baseDy);
+    baseSlotRect = translateRect(baseSlotRect, 0, baseDy);
+  }
 
-  return {
+  let frame: RectMm | undefined;
+  const framePaddingMm = Math.max(0, options.framePaddingMm ?? MARGIN_MM);
+  if (options.includeFrame === true) {
+    const contentBounds = boundsFromGeometry(contourMm, [
+      neckRect,
+      tabRect,
+      baseFootprint.bounds,
+      baseSlotRect,
+    ]);
+    frame = expandRect(contentBounds, framePaddingMm);
+  }
+
+  let geometry: ExportGeometryBody = {
     contour: contourMm,
-    // 曲線補完の除外点も contour と同じ mm 換算を通すことで、頂点列の座標と厳密に一致させる。
     sharpCorners: slotJunctionCorners(slot).map(toMm),
     neck: neckRect,
     tab: tabRect,
     base: baseFootprint,
     baseSlot: baseSlotRect,
     image: imageRect,
-    viewBox: computeViewBox(contourMm, bounds),
+    ...(frame ? { frame } : {}),
   };
+
+  let layoutBounds = boundsFromGeometry(geometry.contour, [
+    geometry.neck,
+    geometry.tab,
+    geometry.base.bounds,
+    geometry.baseSlot,
+    ...(geometry.frame ? [geometry.frame] : []),
+  ]);
+
+  let tileBounds = layoutBounds;
+  let tileRotationDeg: 0 | 90 = 0;
+  let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+  if (options.imposeA4 === true) {
+    const a4MarginMm = 0;
+    const dx = a4MarginMm - layoutBounds.x;
+    const dy = a4MarginMm - layoutBounds.y;
+    geometry = translateExportGeometry(geometry, dx, dy);
+    layoutBounds = translateRect(layoutBounds, dx, dy);
+    const normal = computeA4TileLayout(layoutBounds.width, layoutBounds.height);
+    const rotated = computeA4TileLayout(layoutBounds.height, layoutBounds.width);
+    tileRotationDeg = rotated.count > normal.count ? 90 : 0;
+    tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
+    tileBounds = layoutBounds;
+  }
+
+  const bounds = [
+    geometry.neck,
+    geometry.tab,
+    geometry.base.bounds,
+    geometry.baseSlot,
+    ...(geometry.frame ? [geometry.frame] : []),
+  ];
+
+  return {
+    ...geometry,
+    tileBounds,
+    tileRotationDeg,
+    tileOffsets,
+    viewBox:
+      options.imposeA4 === true
+        ? { x: 0, y: 0, width: A4_PAGE_MM.width, height: A4_PAGE_MM.height }
+        : computeViewBox(geometry.contour, bounds),
+  };
+}
+
+function translatePoint(point: Point, dx: number, dy: number): Point {
+  return { x: point.x + dx, y: point.y + dy };
+}
+
+function translateRect(rect: RectMm, dx: number, dy: number): RectMm {
+  return { ...rect, x: rect.x + dx, y: rect.y + dy };
+}
+
+function translateBaseFootprint(base: BaseFootprintMm, dx: number, dy: number): BaseFootprintMm {
+  return {
+    curve: mapCurve(base.curve, (p) => translatePoint(p, dx, dy)),
+    outline: base.outline.map((p) => translatePoint(p, dx, dy)),
+    bounds: translateRect(base.bounds, dx, dy),
+  };
+}
+
+function translateExportGeometry(
+  geometry: ExportGeometryBody,
+  dx: number,
+  dy: number,
+): ExportGeometryBody {
+  return {
+    contour: geometry.contour.map((p) => translatePoint(p, dx, dy)),
+    sharpCorners: geometry.sharpCorners.map((p) => translatePoint(p, dx, dy)),
+    neck: translateRect(geometry.neck, dx, dy),
+    tab: translateRect(geometry.tab, dx, dy),
+    base: translateBaseFootprint(geometry.base, dx, dy),
+    baseSlot: translateRect(geometry.baseSlot, dx, dy),
+    image: translateRect(geometry.image, dx, dy),
+    ...(geometry.frame ? { frame: translateRect(geometry.frame, dx, dy) } : {}),
+  };
+}
+
+function computeA4TileLayout(
+  tileWidthMm: number,
+  tileHeightMm: number,
+): { count: number; offsets: Point[] } {
+  if (tileWidthMm <= 0 || tileHeightMm <= 0) {
+    return { count: 1, offsets: [{ x: 0, y: 0 }] };
+  }
+
+  const pageMarginMm = 0;
+  const gutterMm = 0;
+  const usableWidth = A4_PAGE_MM.width - pageMarginMm * 2;
+  const usableHeight = A4_PAGE_MM.height - pageMarginMm * 2;
+  const columns = Math.max(1, Math.floor((usableWidth + gutterMm) / (tileWidthMm + gutterMm)));
+  const rows = Math.max(1, Math.floor((usableHeight + gutterMm) / (tileHeightMm + gutterMm)));
+  const occupiedWidth = columns * tileWidthMm + (columns - 1) * gutterMm;
+  const occupiedHeight = rows * tileHeightMm + (rows - 1) * gutterMm;
+  const originX = pageMarginMm + Math.max(0, (usableWidth - occupiedWidth) / 2);
+  const originY = pageMarginMm + Math.max(0, (usableHeight - occupiedHeight) / 2);
+  const offsets: Point[] = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      offsets.push({
+        x: originX + column * (tileWidthMm + gutterMm),
+        y: originY + row * (tileHeightMm + gutterMm),
+      });
+    }
+  }
+
+  return { count: columns * rows, offsets };
+}
+
+function expandRect(rect: RectMm, padding: number): RectMm {
+  return {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2,
+  };
+}
+
+function boundsFromGeometry(points: readonly Point[], rects: readonly RectMm[]): RectMm {
+  const xs: number[] = [];
+  const ys: number[] = [];
+
+  for (const p of points) {
+    xs.push(p.x);
+    ys.push(p.y);
+  }
+  for (const rect of rects) {
+    xs.push(rect.x, rect.x + rect.width);
+    ys.push(rect.y, rect.y + rect.height);
+  }
+
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 /** 頂点列と矩形群を包む境界（mm）に余白を足した領域を求める。 */

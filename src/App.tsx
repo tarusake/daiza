@@ -7,7 +7,7 @@ import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { loadBaseShapeSource } from '@/analysis/baseShapeSource';
 import { loadPngFile } from '@/analysis/imageLoader';
 import { computeMmPerPixel } from '@/analysis/scale';
-import { ExportPanel } from '@/components/ExportPanel';
+import { ExportPanel, type ExportSettings } from '@/components/ExportPanel';
 import { HeaderActions } from '@/components/HeaderActions';
 import { LeftPanel } from '@/components/LeftPanel';
 import { PaneResizer } from '@/components/PaneResizer';
@@ -46,6 +46,13 @@ function exportFileName(imageFileName: string, extension: string): string {
  */
 const LEFT_PANE = { initial: 384, min: 280, max: 560 } as const;
 const RIGHT_PANE = { initial: 320, min: 240, max: 480 } as const;
+
+const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  partGapMm: 20,
+  includeFrame: false,
+  framePaddingMm: 5,
+  imposeA4: false,
+};
 
 function App() {
   const { state, actions } = useAppState();
@@ -121,6 +128,13 @@ function App() {
   }, [result, image, parameters]);
   // SVG は線データのみが既定。絵柄が要るときだけ画像を埋め込む（ファイルは重くなる）。
   const [embedImageInSvg, setEmbedImageInSvg] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS);
+  const impositionPreviewImageHref = useMemo(() => {
+    if (!image || !exportSettings.imposeA4) {
+      return undefined;
+    }
+    return bitmapToPngDataUrl(image.bitmap);
+  }, [image, exportSettings.imposeA4]);
   // .ai は PDF 生成と画像の PNG 化を伴い、大きな画像では体感できる時間がかかる。
   // 生成中はボタンを止め、二重実行を防ぐ。
   const [exporting, setExporting] = useState(false);
@@ -132,7 +146,13 @@ function App() {
     try {
       const svg = generateSvg(
         result,
-        embedImageInSvg ? { imageHref: bitmapToPngDataUrl(image.bitmap) } : {},
+        {
+          ...(embedImageInSvg ? { imageHref: bitmapToPngDataUrl(image.bitmap) } : {}),
+          partGapMm: exportSettings.partGapMm,
+          includeFrame: exportSettings.includeFrame,
+          framePaddingMm: exportSettings.framePaddingMm,
+          imposeA4: exportSettings.imposeA4,
+        },
       );
       downloadBlob(
         new Blob([svg], { type: 'image/svg+xml' }),
@@ -142,7 +162,7 @@ function App() {
       // エクスポート失敗でアプリを落とさず、エラー表示へ畳む（SPEC のエラーハンドリング）。
       actions.failAnalysis(toUnexpectedError(cause));
     }
-  }, [result, image, embedImageInSvg, actions]);
+  }, [result, image, embedImageInSvg, exportSettings, actions]);
 
   // .ai は絵柄画像を必ず含む「絵柄付きアウトライン」。実体は PDF 互換のドキュメントで、
   // pdf-lib を dynamic import するため生成が非同期になる。
@@ -153,7 +173,16 @@ function App() {
     setExporting(true);
     void (async () => {
       try {
-        const bytes = await generateAi(result, { bytes: await bitmapToPngBytes(image.bitmap) });
+        const bytes = await generateAi(
+          result,
+          { bytes: await bitmapToPngBytes(image.bitmap) },
+          {
+            partGapMm: exportSettings.partGapMm,
+            includeFrame: exportSettings.includeFrame,
+            framePaddingMm: exportSettings.framePaddingMm,
+            imposeA4: exportSettings.imposeA4,
+          },
+        );
         downloadBlob(
           // .ai の中身は PDF なので MIME も PDF とする（保存名の拡張子が .ai であることが本質）。
           new Blob([bytes as BlobPart], { type: 'application/pdf' }),
@@ -165,7 +194,7 @@ function App() {
         setExporting(false);
       }
     })();
-  }, [result, image, actions]);
+  }, [result, image, exportSettings, actions]);
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -247,6 +276,12 @@ function App() {
           <ExportPanel
             embedImageInSvg={embedImageInSvg}
             onEmbedImageInSvgChange={setEmbedImageInSvg}
+            settings={exportSettings}
+            onSettingsChange={setExportSettings}
+            result={state.result}
+            {...(impositionPreviewImageHref !== undefined
+              ? { previewImageHref: impositionPreviewImageHref }
+              : {})}
             exporting={exporting}
             {...(result ? { onExportSvg: handleExportSvg, onExportAi: handleExportAi } : {})}
           />
