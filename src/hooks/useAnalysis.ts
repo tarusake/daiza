@@ -85,6 +85,11 @@ export function useAnalysis(state: AppState, actions: AppStateActions): void {
   }, [actions]);
 
   const workerRef = useRef<Worker | null>(null);
+  // 第2相は同時に1件だけWorkerへ送る。高解像度SVGで数値を1刻みずつ変更した際、
+  // 重い解析要求がFIFOへ積み上がって最新結果が長時間待たされるのを防ぐ。
+  // 処理中の変更は常に最新1件で上書きし、現在の応答後に直ちに送る。
+  const paramsInFlightRef = useRef(false);
+  const pendingParamsRequestRef = useRef<AnalysisWorkerRequest | null>(null);
   // 第 1 相の有効世代。新規投入で ++ し、古い応答（別画像の結果）を弾く鍵にする。
   const imageRequestIdRef = useRef(0);
   // 第 2 相の有効世代。パラメータ変更のたびに ++ し、陳腐化した応答を弾く。
@@ -126,6 +131,14 @@ export function useAnalysis(state: AppState, actions: AppStateActions): void {
         return;
       }
 
+      paramsInFlightRef.current = false;
+      const pendingRequest = pendingParamsRequestRef.current;
+      pendingParamsRequestRef.current = null;
+      if (pendingRequest?.type === 'runAnalysis' && workerRef.current) {
+        paramsInFlightRef.current = true;
+        workerRef.current.postMessage(pendingRequest);
+      }
+
       // 第 2 相応答。世代不一致（応答待ちの間にパラメータや画像が変わった）は破棄する。
       if (response.requestId !== paramsRequestIdRef.current) {
         return;
@@ -160,6 +173,7 @@ export function useAnalysis(state: AppState, actions: AppStateActions): void {
       lastPostedIdRef.current = null;
       imageRequestIdRef.current++;
       paramsRequestIdRef.current++;
+      pendingParamsRequestRef.current = null;
       return;
     }
     // 同一 id の再実行（actions 参照変化等での effect 再評価）は再投入しない。
@@ -172,6 +186,7 @@ export function useAnalysis(state: AppState, actions: AppStateActions): void {
     const requestId = ++imageRequestIdRef.current;
     // 前の画像に対する第 2 相の応答が新しい画像の結果に混ざらないよう世代を進める。
     paramsRequestIdRef.current++;
+    pendingParamsRequestRef.current = null;
     actions.startAnalysis();
 
     // 解析用ピクセルは読み込み時に pixelStore へ預けられている（1 回きりの取り出し）。
@@ -248,7 +263,12 @@ export function useAnalysis(state: AppState, actions: AppStateActions): void {
           params,
           baseShapeSource: source,
         };
-        worker.postMessage(request);
+        if (paramsInFlightRef.current) {
+          pendingParamsRequestRef.current = request;
+        } else {
+          paramsInFlightRef.current = true;
+          worker.postMessage(request);
+        }
       }, PARAM_DEBOUNCE_MS);
       return () => clearTimeout(timer);
     }

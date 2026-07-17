@@ -15,7 +15,12 @@
 
 import type { PDFName as PDFNameObject } from 'pdf-lib';
 
-import { buildExportGeometry, EXPORT_COLORS, rectPathData, strokeWidthMm } from '@/export/geometry';
+import {
+  buildExportGeometry,
+  exportColors,
+  placePartPoint,
+  strokeWidthMm,
+} from '@/export/geometry';
 import type { ExportGeometry, RectMm } from '@/export/geometry';
 import type { AnalysisResult, Point } from '@/model/types';
 import { closedCurvePathData, curvePathData, mapCurve } from '@/utils/curve';
@@ -26,6 +31,35 @@ const MM_TO_PT = 72 / 25.4;
 /** 埋め込む絵柄画像。α を保った PNG のバイト列（生成は DOM 依存なので export/raster が担う）。 */
 export interface EmbeddedPng {
   bytes: Uint8Array;
+}
+
+/** generateAi の切り替え。 */
+export interface AiExportOptions {
+  /** 絵柄パーツと台座パーツの間隔(mm)。 */
+  partGapMm?: number;
+  /** 図形全体の外側に枠を付けるか。 */
+  includeFrame?: boolean;
+  /** 枠を付ける場合の図形から枠までの余白(mm)。 */
+  framePaddingMm?: number;
+  /** 面付けページへ原寸で配置するか。 */
+  imposeA4?: boolean;
+  /** 絵柄と台座を独立して面付けする。 */
+  separatePartsImposition?: boolean;
+  impositionGapMm?: number;
+  /** 面付けページ幅(mm)。 */
+  impositionPageWidthMm?: number;
+  /** 面付けページ高さ(mm)。 */
+  impositionPageHeightMm?: number;
+  /** カットラインだけを赤で出すか。 */
+  redCutLinesOnly?: boolean;
+  /** 書き出し幾何全体を左右反転するか。 */
+  mirrorX?: boolean;
+}
+
+interface PdfExportMode {
+  includeArtwork: boolean;
+  includeCutLines: boolean;
+  title: string;
 }
 
 /**
@@ -81,18 +115,79 @@ function fmtPt(value: number): string {
  * 出力はページ 1 枚。ページサイズは viewBox（余白込みの外接矩形）の実寸そのままなので、
  * Illustrator 上でもアートボードが mm 実寸になる。
  */
-export async function generateAi(result: AnalysisResult, png: EmbeddedPng): Promise<Uint8Array> {
-  const { PDFDocument, PDFHexString, PDFName, PDFOperator, PDFOperatorNames, rgb } =
+export async function generateAi(
+  result: AnalysisResult,
+  png: EmbeddedPng,
+  options: AiExportOptions = {},
+): Promise<Uint8Array> {
+  return generatePdfBytes(result, png, options, {
+    includeArtwork: true,
+    includeCutLines: true,
+    title: 'Daiza 台座設計図（実寸 mm）',
+  });
+}
+
+/** カットラインだけの Illustrator 互換 PDF（=.ai）を生成する。 */
+export async function generateCutlineAi(
+  result: AnalysisResult,
+  options: AiExportOptions = {},
+): Promise<Uint8Array> {
+  return generatePdfBytes(result, null, options, {
+    includeArtwork: false,
+    includeCutLines: true,
+    title: 'Daiza カットライン（実寸 mm）',
+  });
+}
+
+/** 絵柄画像だけの PDF を生成する。 */
+export async function generateImagePdf(
+  result: AnalysisResult,
+  png: EmbeddedPng,
+  options: AiExportOptions = {},
+): Promise<Uint8Array> {
+  return generatePdfBytes(result, png, options, {
+    includeArtwork: true,
+    includeCutLines: false,
+    title: 'Daiza 絵柄画像（実寸 mm）',
+  });
+}
+
+async function generatePdfBytes(
+  result: AnalysisResult,
+  png: EmbeddedPng | null,
+  options: AiExportOptions,
+  mode: PdfExportMode,
+): Promise<Uint8Array> {
+  const { PDFDocument, PDFHexString, PDFName, PDFOperator, PDFOperatorNames, degrees, rgb } =
     await import('pdf-lib');
 
-  const geometry: ExportGeometry = buildExportGeometry(result, { includeImage: true });
+  const geometry: ExportGeometry = buildExportGeometry(result, {
+    includeImage: mode.includeArtwork,
+    ...(options.partGapMm !== undefined ? { partGapMm: options.partGapMm } : {}),
+    ...(options.includeFrame !== undefined ? { includeFrame: options.includeFrame } : {}),
+    ...(options.framePaddingMm !== undefined ? { framePaddingMm: options.framePaddingMm } : {}),
+    ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
+    ...(options.separatePartsImposition !== undefined
+      ? { separatePartsImposition: options.separatePartsImposition }
+      : {}),
+    ...(options.impositionGapMm !== undefined ? { impositionGapMm: options.impositionGapMm } : {}),
+    ...(options.impositionPageWidthMm !== undefined
+      ? { impositionPageWidthMm: options.impositionPageWidthMm }
+      : {}),
+    ...(options.impositionPageHeightMm !== undefined
+      ? { impositionPageHeightMm: options.impositionPageHeightMm }
+      : {}),
+    ...(options.mirrorX !== undefined ? { mirrorX: options.mirrorX } : {}),
+  });
   const { viewBox } = geometry;
+  const redCutLinesOnly = options.redCutLinesOnly === true;
+  const colors = exportColors(redCutLinesOnly);
 
   const pageWidth = viewBox.width * MM_TO_PT;
   const pageHeight = viewBox.height * MM_TO_PT;
 
   const doc = await PDFDocument.create();
-  doc.setTitle('Daiza 台座設計図（実寸 mm）');
+  doc.setTitle(mode.title);
   const page = doc.addPage([pageWidth, pageHeight]);
 
   // レイヤー（OCG）を作り、ページのリソースから名前で参照できるようにする。
@@ -155,50 +250,213 @@ export async function generateAi(result: AnalysisResult, png: EmbeddedPng): Prom
       borderWidth,
     });
   };
+  const tilePoint = (offset: Point, point: Point): Point => {
+    if (geometry.tileRotationDeg === 0) {
+      return { x: point.x + offset.x, y: point.y + offset.y };
+    }
+
+    const bounds = geometry.tileBounds;
+    return {
+      x: bounds.x + offset.x + bounds.height - (point.y - bounds.y),
+      y: bounds.y + offset.y + (point.x - bounds.x),
+    };
+  };
+  const rectPathForTile = (offset: Point, rect: RectMm): string => {
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+    const corners = [
+      { x: rect.x, y: rect.y },
+      { x: right, y: rect.y },
+      { x: right, y: bottom },
+      { x: rect.x, y: bottom },
+    ].map((p) => toPt(tilePoint(offset, p), viewBox));
+    const [p0, p1, p2, p3] = corners as [Point, Point, Point, Point];
+    return (
+      `M ${fmtPt(p0.x)} ${fmtPt(p0.y)} ` +
+      `L ${fmtPt(p1.x)} ${fmtPt(p1.y)} ` +
+      `L ${fmtPt(p2.x)} ${fmtPt(p2.y)} ` +
+      `L ${fmtPt(p3.x)} ${fmtPt(p3.y)} Z`
+    );
+  };
+  const rectBoundsForTile = (offset: Point, rect: RectMm): RectMm => {
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+    const corners = [
+      { x: rect.x, y: rect.y },
+      { x: right, y: rect.y },
+      { x: right, y: bottom },
+      { x: rect.x, y: bottom },
+    ].map((p) => tilePoint(offset, p));
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const maxX = Math.max(...xs);
+    const maxY = Math.max(...ys);
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  };
 
   // 絵柄（最背面）。drawImage は PDF 座標（左下原点・Y 上向き）なので、mm の上端 Y を
   // ページ高さから引いて「画像の下辺」の位置へ直す。
-  const embedded = await doc.embedPng(png.bytes);
-  const imageRect = rectToPt(geometry.image, viewBox);
-  inLayer('artwork', () => {
-    page.drawImage(embedded, {
-      x: imageRect.x,
-      y: pageHeight - (imageRect.y + imageRect.height),
-      width: imageRect.width,
-      height: imageRect.height,
-    });
-  });
-
-  // baseFigure モード：差込口・台座を別レイヤーに出す。
-  const baseGeometry = geometry.base;
-  if (baseGeometry) {
-    inLayer('base', () => {
-      const basePath = mapCurve(baseGeometry.curve, (p) => toPt(p, viewBox));
-      strokePath(curvePathData(basePath, fmtPt), EXPORT_COLORS.base);
-      strokePath(rectPathData(rectToPt(geometry.neck!, viewBox), fmtPt), EXPORT_COLORS.slot);
-      strokePath(rectPathData(rectToPt(geometry.tab!, viewBox), fmtPt), EXPORT_COLORS.slot);
-      strokePath(rectPathData(rectToPt(geometry.baseSlot!, viewBox), fmtPt), EXPORT_COLORS.slot);
+  if (mode.includeArtwork && png !== null) {
+    const embedded = await doc.embedPng(png.bytes);
+    inLayer('artwork', () => {
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        for (const placement of separate.figurePlacements) {
+          const corners = [
+            { x: geometry.image.x, y: geometry.image.y },
+            {
+              x: geometry.image.x + geometry.image.width,
+              y: geometry.image.y + geometry.image.height,
+            },
+          ].map((p) => placePartPoint(p, separate.figureBounds, placement));
+          const x = Math.min(corners[0]!.x, corners[1]!.x) * MM_TO_PT;
+          const top = Math.min(corners[0]!.y, corners[1]!.y) * MM_TO_PT;
+          if (placement.rotationDeg === 90) {
+            page.drawImage(embedded, {
+              x,
+              y: pageHeight - top,
+              width: geometry.image.width * MM_TO_PT,
+              height: geometry.image.height * MM_TO_PT,
+              rotate: degrees(-90),
+            });
+          } else {
+            page.drawImage(embedded, {
+              x,
+              y: pageHeight - top - geometry.image.height * MM_TO_PT,
+              width: geometry.image.width * MM_TO_PT,
+              height: geometry.image.height * MM_TO_PT,
+            });
+          }
+        }
+        return;
+      }
+      for (const offset of geometry.tileOffsets) {
+        const imageBounds = rectBoundsForTile(offset, geometry.image);
+        const imageRect = rectToPt(imageBounds, viewBox);
+        if (geometry.tileRotationDeg === 90) {
+          page.drawImage(embedded, {
+            x: imageRect.x,
+            y: pageHeight - imageRect.y,
+            width: geometry.image.width * MM_TO_PT,
+            height: geometry.image.height * MM_TO_PT,
+            rotate: degrees(-90),
+          });
+        } else {
+          page.drawImage(embedded, {
+            x: imageRect.x,
+            y: pageHeight - (imageRect.y + imageRect.height),
+            width: imageRect.width,
+            height: imageRect.height,
+          });
+        }
+      }
     });
   }
 
-  // カットライン（最前面）。曲線補完した点列をそのままベジェパスとして出す。
-  // keychain モードでは穴も同じレイヤーに出す。
-  inLayer('cutline', () => {
-    const contourPt = geometry.contour.map((p) => toPt(p, viewBox));
-    const sharpPt = geometry.sharpCorners.map((p) => toPt(p, viewBox));
-    strokePath(
-      closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
-      EXPORT_COLORS.contour,
-    );
-    if (geometry.hole) {
-      const c = toPt(geometry.hole.center, viewBox);
-      const r = geometry.hole.radius * MM_TO_PT;
-      strokePath(
-        `M ${fmtPt(c.x + r)} ${fmtPt(c.y)} A ${fmtPt(r)} ${fmtPt(r)} 0 1 0 ${fmtPt(c.x - r)} ${fmtPt(c.y)} A ${fmtPt(r)} ${fmtPt(r)} 0 1 0 ${fmtPt(c.x + r)} ${fmtPt(c.y)} Z`,
-        'rgb(239, 68, 68)',
-      );
-    }
-  });
+  // 差込口・台座。差込部の首部・ツメは位置確認と加工形状のため独立線としても出す。
+  if (mode.includeCutLines) {
+    inLayer('base', () => {
+      // 面付け時は用紙サイズそのものを編集可能な矩形パスとして1つ出力する。
+      // タイルごとの任意枠（geometry.frame）とは別で、複製・回転を適用しない。
+      if (options.imposeA4 === true) {
+        const [r, g, b] = hexToRgbComponents(colors.frame);
+        page.drawRectangle({
+          x: 0,
+          y: 0,
+          width: pageWidth,
+          height: pageHeight,
+          borderColor: rgb(r, g, b),
+          borderWidth,
+        });
+      }
+      if (!geometry.base || !geometry.baseSlot || !geometry.neck || !geometry.tab) {
+        return;
+      }
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        const pathFor = (
+          rect: RectMm,
+          placement: (typeof separate.figurePlacements)[number],
+          bounds: RectMm,
+        ) => {
+          const corners = [
+            { x: rect.x, y: rect.y },
+            { x: rect.x + rect.width, y: rect.y },
+            { x: rect.x + rect.width, y: rect.y + rect.height },
+            { x: rect.x, y: rect.y + rect.height },
+          ].map((p) => toPt(placePartPoint(p, bounds, placement), viewBox));
+          return `M ${fmtPt(corners[0]!.x)} ${fmtPt(corners[0]!.y)} L ${fmtPt(corners[1]!.x)} ${fmtPt(corners[1]!.y)} L ${fmtPt(corners[2]!.x)} ${fmtPt(corners[2]!.y)} L ${fmtPt(corners[3]!.x)} ${fmtPt(corners[3]!.y)} Z`;
+        };
+        for (const placement of separate.figurePlacements) {
+          if (!redCutLinesOnly) {
+            strokePath(pathFor(geometry.neck, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.tab, placement, separate.figureBounds), colors.slot);
+          }
+        }
+        for (const placement of separate.basePlacements) {
+          const basePath = mapCurve(geometry.base.curve, (p) =>
+            toPt(placePartPoint(p, separate.baseBounds, placement), viewBox),
+          );
+          strokePath(curvePathData(basePath, fmtPt), colors.base);
+          strokePath(pathFor(geometry.baseSlot, placement, separate.baseBounds), colors.baseSlot);
+        }
+        return;
+      }
+      for (const offset of geometry.tileOffsets) {
+        // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
+        const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
+        strokePath(curvePathData(basePath, fmtPt), colors.base);
+        if (!redCutLinesOnly) {
+          strokePath(rectPathForTile(offset, geometry.neck), colors.slot);
+          strokePath(rectPathForTile(offset, geometry.tab), colors.slot);
+        }
+        strokePath(rectPathForTile(offset, geometry.baseSlot), colors.baseSlot);
+        if (geometry.frame !== undefined) {
+          strokePath(rectPathForTile(offset, geometry.frame), colors.frame);
+        }
+      }
+    });
+
+    // カットライン（最前面）。曲線補完した点列をそのままベジェパスとして出すので、
+    // Illustrator 上でもアンカー付きのパスとして編集できる。差込部の肩（首部とツメの接合部）
+    // だけは丸めず直角のまま出す。除外点も contour と同じ写像を通すことで座標一致を保つ。
+    inLayer('cutline', () => {
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        for (const placement of separate.figurePlacements) {
+          const contourPt = geometry.contour.map((p) =>
+            toPt(placePartPoint(p, separate.figureBounds, placement), viewBox),
+          );
+          const sharpPt = geometry.sharpCorners.map((p) =>
+            toPt(placePartPoint(p, separate.figureBounds, placement), viewBox),
+          );
+          strokePath(
+            closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
+            colors.contour,
+          );
+        }
+        return;
+      }
+      for (const offset of geometry.tileOffsets) {
+        const contourPt = geometry.contour.map((p) => toPt(tilePoint(offset, p), viewBox));
+        const sharpPt = geometry.sharpCorners.map((p) => toPt(tilePoint(offset, p), viewBox));
+        strokePath(
+          closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
+          colors.contour,
+        );
+        if (geometry.hole) {
+          const center = toPt(tilePoint(offset, geometry.hole.center), viewBox);
+          const radius = geometry.hole.radius * MM_TO_PT;
+          strokePath(
+            `M ${fmtPt(center.x + radius)} ${fmtPt(center.y)} A ${fmtPt(radius)} ${fmtPt(radius)} 0 1 0 ${fmtPt(center.x - radius)} ${fmtPt(center.y)} A ${fmtPt(radius)} ${fmtPt(radius)} 0 1 0 ${fmtPt(center.x + radius)} ${fmtPt(center.y)} Z`,
+            colors.contour,
+          );
+        }
+      }
+    });
+  }
 
   return doc.save();
 }

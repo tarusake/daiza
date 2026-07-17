@@ -24,9 +24,28 @@ export const EXPORT_COLORS = {
   contour: '#374151',
   /** 差込部（首部・ツメ）。 */
   slot: '#2563eb',
+  /** 台座に切る差込口。 */
+  baseSlot: '#2563eb',
   /** 台座。 */
   base: '#16a34a',
+  /** 面付け・裁ち落とし確認用の枠。 */
+  frame: '#111827',
 } as const;
+
+export const RED_CUTLINE_COLORS = {
+  ...EXPORT_COLORS,
+  contour: '#ff0000',
+  baseSlot: '#ff0000',
+  base: '#ff0000',
+  frame: '#000000',
+} as const satisfies Record<keyof typeof EXPORT_COLORS, string>;
+
+export function exportColors(redCutLinesOnly: boolean): Record<keyof typeof EXPORT_COLORS, string> {
+  return redCutLinesOnly ? RED_CUTLINE_COLORS : EXPORT_COLORS;
+}
+
+/** 面付け用紙サイズの既定値。A4 縦置きの実寸(mm)。 */
+export const DEFAULT_IMPOSITION_PAGE_MM = { width: 210, height: 297 } as const;
 
 /**
  * mm 値をファイル出力向けの短い文字列へ整える。
@@ -43,6 +62,28 @@ export interface RectMm {
   y: number;
   width: number;
   height: number;
+}
+
+export interface PartPlacement {
+  x: number;
+  y: number;
+  rotationDeg: 0 | 90;
+}
+
+export interface SeparatePartsLayout {
+  figureBounds: RectMm;
+  baseBounds: RectMm;
+  figurePlacements: readonly PartPlacement[];
+  basePlacements: readonly PartPlacement[];
+  setCount: number;
+}
+
+export function placePartPoint(point: Point, bounds: RectMm, placement: PartPlacement): Point {
+  const localX = point.x - bounds.x;
+  const localY = point.y - bounds.y;
+  return placement.rotationDeg === 0
+    ? { x: placement.x + localX, y: placement.y + localY }
+    : { x: placement.x + bounds.height - localY, y: placement.y + localX };
 }
 
 /**
@@ -88,9 +129,24 @@ export interface ExportGeometry {
   hole?: { center: Point; radius: number };
   /** 絵柄画像を実寸で置く矩形（mm）。画像は解析と同じ左上原点なので常に原点始まり。 */
   image: RectMm;
+  /** 任意で追加する枠線（mm）。 */
+  frame?: RectMm;
+  /** 1 タイル分の外接。面付けではこの寸法を基準に行列数を決める。 */
+  tileBounds: RectMm;
+  /** 面付け時に採用したタイル回転。数が多く入る 0度 / 90度を自動選択する。 */
+  tileRotationDeg: 0 | 90;
+  /** 面付け時の複製オフセット。通常出力では [{ x: 0, y: 0 }] の 1 要素。 */
+  tileOffsets: readonly Point[];
+  /** 絵柄・台座を独立面付けする場合の配置。 */
+  separatePartsLayout?: SeparatePartsLayout;
   /** 全要素を包む外接矩形に余白を足した領域（mm）。 */
   viewBox: RectMm;
 }
+
+type ExportGeometryBody = Omit<
+  ExportGeometry,
+  'tileBounds' | 'tileRotationDeg' | 'tileOffsets' | 'viewBox'
+>;
 
 /** buildExportGeometry の切り替え。 */
 export interface ExportGeometryOptions {
@@ -100,6 +156,24 @@ export interface ExportGeometryOptions {
    * 一方で画像は透明余白を持ち得る）ため、含める時だけ外接に加える。
    */
   includeImage: boolean;
+  /** 絵柄パーツと台座パーツの間隔(mm)。0 なら組み立て位置のまま重ねて出す。 */
+  partGapMm?: number;
+  /** 図形全体の外側に枠を付けるか。 */
+  includeFrame?: boolean;
+  /** 枠を付ける場合の図形から枠までの余白(mm)。 */
+  framePaddingMm?: number;
+  /** 面付けページへ原寸で配置するか。 */
+  imposeA4?: boolean;
+  /** 面付け時、絵柄と台座を独立配置して同数セットを最大化する。 */
+  separatePartsImposition?: boolean;
+  /** パーツ間の隙間、および面付け外周からの余白(mm)。 */
+  impositionGapMm?: number;
+  /** 面付けページ幅(mm)。未指定なら A4 幅。 */
+  impositionPageWidthMm?: number;
+  /** 面付けページ高さ(mm)。未指定なら A4 高さ。 */
+  impositionPageHeightMm?: number;
+  /** 書き出し幾何全体を左右反転するか。 */
+  mirrorX?: boolean;
 }
 
 /**
@@ -137,17 +211,81 @@ export function buildExportGeometry(
   // keychain モード：回転済み contour + 穴のみ。
   if (result.keychain) {
     const { keychain } = result;
-    const hole = {
+    let hole = {
       center: toMm(keychain.holeCenterPixel),
       radius: keychain.holeRadiusMm,
     };
-    const bounds = [holeRect(hole), ...(options.includeImage ? [imageRect] : [])];
+    let keychainContour = contourMm;
+    let keychainImage = imageRect;
+    let frame: RectMm | undefined;
+    const contentRects = [holeRect(hole), ...(options.includeImage ? [keychainImage] : [])];
+    if (options.includeFrame === true) {
+      frame = expandRect(
+        boundsFromGeometry(keychainContour, contentRects),
+        Math.max(0, options.framePaddingMm ?? MARGIN_MM),
+      );
+    }
+
+    let layoutBounds = boundsFromGeometry(keychainContour, [
+      ...contentRects,
+      ...(frame ? [frame] : []),
+    ]);
+    if (options.mirrorX === true) {
+      keychainContour = keychainContour.map((point) => mirrorPointX(point, layoutBounds));
+      keychainImage = mirrorRectX(keychainImage, layoutBounds);
+      hole = { ...hole, center: mirrorPointX(hole.center, layoutBounds) };
+      if (frame) frame = mirrorRectX(frame, layoutBounds);
+    }
+
+    let tileBounds = layoutBounds;
+    let tileRotationDeg: 0 | 90 = 0;
+    let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+    const pageSize = normalizedPageSize(options);
+    if (options.imposeA4 === true) {
+      const dx = -layoutBounds.x;
+      const dy = -layoutBounds.y;
+      keychainContour = keychainContour.map((point) => translatePoint(point, dx, dy));
+      keychainImage = translateRect(keychainImage, dx, dy);
+      hole = { ...hole, center: translatePoint(hole.center, dx, dy) };
+      if (frame) frame = translateRect(frame, dx, dy);
+      layoutBounds = translateRect(layoutBounds, dx, dy);
+
+      const gapMm = Math.max(0, options.impositionGapMm ?? 5);
+      const normal = computeImpositionTileLayout(
+        layoutBounds.width,
+        layoutBounds.height,
+        pageSize,
+        gapMm,
+      );
+      const rotated = computeImpositionTileLayout(
+        layoutBounds.height,
+        layoutBounds.width,
+        pageSize,
+        gapMm,
+      );
+      tileRotationDeg = rotated.count > normal.count ? 90 : 0;
+      tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
+      tileBounds = layoutBounds;
+    }
+
+    const viewBox =
+      options.imposeA4 === true
+        ? { x: 0, y: 0, width: pageSize.width, height: pageSize.height }
+        : computeViewBox(keychainContour, [
+            holeRect(hole),
+            ...(options.includeImage ? [keychainImage] : []),
+            ...(frame ? [frame] : []),
+          ]);
     return {
-      contour: contourMm,
+      contour: keychainContour,
       sharpCorners: [],
       hole,
-      image: imageRect,
-      viewBox: computeViewBox(contourMm, bounds),
+      image: keychainImage,
+      ...(frame ? { frame } : {}),
+      tileBounds,
+      tileRotationDeg,
+      tileOffsets,
+      viewBox,
     };
   }
 
@@ -179,7 +317,7 @@ export function buildExportGeometry(
     x: slot.centerXMm + p.x,
     y: baseOriginYMm + p.y,
   });
-  const baseFootprint: BaseFootprintMm = {
+  let baseFootprint: BaseFootprintMm = {
     curve: mapCurve(base.footprint.curve, toBaseMm),
     outline: base.footprint.polyline.map(toBaseMm),
     bounds: {
@@ -191,21 +329,34 @@ export function buildExportGeometry(
   };
 
   const slitCenterYMm = baseOriginYMm + slot.depthOffsetMm;
-  const baseSlotRect: RectMm = {
+  let baseSlotRect: RectMm = {
     x: slot.centerXMm - slot.widthMm / 2,
     y: slitCenterYMm - slot.tabDepthMm / 2,
     width: slot.widthMm,
     height: slot.tabDepthMm,
   };
 
-  const bounds = [
-    neckRect,
-    tabRect,
-    baseFootprint.bounds,
-    ...(options.includeImage ? [imageRect] : []),
-  ];
+  const partGapMm = Math.max(0, options.partGapMm ?? 0);
+  if (partGapMm > 0) {
+    const figureBounds = boundsFromGeometry(contourMm, [neckRect, tabRect]);
+    const baseDy = figureBounds.y + figureBounds.height + partGapMm - baseFootprint.bounds.y;
+    baseFootprint = translateBaseFootprint(baseFootprint, 0, baseDy);
+    baseSlotRect = translateRect(baseSlotRect, 0, baseDy);
+  }
 
-  return {
+  let frame: RectMm | undefined;
+  const framePaddingMm = Math.max(0, options.framePaddingMm ?? MARGIN_MM);
+  if (options.includeFrame === true) {
+    const contentBounds = boundsFromGeometry(contourMm, [
+      neckRect,
+      tabRect,
+      baseFootprint.bounds,
+      baseSlotRect,
+    ]);
+    frame = expandRect(contentBounds, framePaddingMm);
+  }
+
+  let geometry: ExportGeometryBody = {
     contour: contourMm,
     sharpCorners: slotJunctionCorners(slot).map(toMm),
     neck: neckRect,
@@ -213,8 +364,337 @@ export function buildExportGeometry(
     base: baseFootprint,
     baseSlot: baseSlotRect,
     image: imageRect,
-    viewBox: computeViewBox(contourMm, bounds),
+    ...(frame ? { frame } : {}),
   };
+
+  const outputRects = exportBoundsRects(geometry);
+  const mirrorBounds = boundsFromGeometry(geometry.contour, outputRects);
+  if (options.mirrorX === true) {
+    geometry = mirrorExportGeometryX(geometry, mirrorBounds);
+  }
+
+  let layoutBounds = boundsFromGeometry(geometry.contour, exportBoundsRects(geometry));
+
+  let tileBounds = layoutBounds;
+  let tileRotationDeg: 0 | 90 = 0;
+  let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+  let separatePartsLayout: SeparatePartsLayout | undefined;
+  const pageSize = normalizedPageSize(options);
+  const impositionGapMm = Math.max(0, options.impositionGapMm ?? 5);
+  if (options.imposeA4 === true && options.separatePartsImposition === true) {
+    const figureBounds = boundsFromGeometry(geometry.contour, [
+      geometry.neck!,
+      geometry.tab!,
+      ...(options.includeImage ? [geometry.image] : []),
+    ]);
+    const baseBounds = boundsFromGeometry(geometry.base!.outline, [geometry.baseSlot!]);
+    separatePartsLayout = computeSeparatePartsLayout(
+      figureBounds,
+      baseBounds,
+      geometry.base!.outline,
+      pageSize,
+      impositionGapMm,
+    );
+  } else if (options.imposeA4 === true) {
+    const a4MarginMm = 0;
+    const dx = a4MarginMm - layoutBounds.x;
+    const dy = a4MarginMm - layoutBounds.y;
+    geometry = translateExportGeometry(geometry, dx, dy);
+    layoutBounds = translateRect(layoutBounds, dx, dy);
+    const normal = computeImpositionTileLayout(
+      layoutBounds.width,
+      layoutBounds.height,
+      pageSize,
+      impositionGapMm,
+    );
+    const rotated = computeImpositionTileLayout(
+      layoutBounds.height,
+      layoutBounds.width,
+      pageSize,
+      impositionGapMm,
+    );
+    tileRotationDeg = rotated.count > normal.count ? 90 : 0;
+    tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
+    tileBounds = layoutBounds;
+  }
+
+  const bounds = exportBoundsRects(geometry);
+
+  return {
+    ...geometry,
+    tileBounds,
+    tileRotationDeg,
+    tileOffsets,
+    ...(separatePartsLayout ? { separatePartsLayout } : {}),
+    viewBox:
+      options.imposeA4 === true
+        ? { x: 0, y: 0, width: pageSize.width, height: pageSize.height }
+        : computeViewBox(geometry.contour, bounds),
+  };
+}
+
+function computeSeparatePartsLayout(
+  figureBounds: RectMm,
+  baseBounds: RectMm,
+  baseOutline: readonly Point[],
+  page: { width: number; height: number },
+  gapMm: number,
+): SeparatePartsLayout {
+  type Candidate = { count: number; figures: PartPlacement[]; bases: PartPlacement[] };
+  let best: Candidate = { count: 0, figures: [], bases: [] };
+  const orientations: readonly (0 | 90)[] = [0, 90];
+  const size = (bounds: RectMm, rotation: 0 | 90) =>
+    rotation === 0
+      ? { width: bounds.width, height: bounds.height }
+      : { width: bounds.height, height: bounds.width };
+  const grid = (
+    region: RectMm,
+    item: { width: number; height: number },
+    rotationDeg: 0 | 90,
+    gapX: number,
+    gapY: number,
+  ): PartPlacement[] => {
+    const columns = Math.floor((region.width + gapX) / (item.width + gapX));
+    const rows = Math.floor((region.height + gapY) / (item.height + gapY));
+    if (columns < 1 || rows < 1) return [];
+    const result: PartPlacement[] = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        result.push({
+          x: region.x + column * (item.width + gapX),
+          y: region.y + row * (item.height + gapY),
+          rotationDeg,
+        });
+      }
+    }
+    return result;
+  };
+
+  // bbox の左右／上下それぞれに直線区間がある方向だけ、台座同士を密着可能にする。
+  const tolerance = Math.max(baseBounds.width, baseBounds.height) * 1e-6;
+  const hasEdge = (axis: 'x' | 'y', value: number): boolean =>
+    baseOutline.some((point, index) => {
+      const next = baseOutline[(index + 1) % baseOutline.length];
+      return (
+        next !== undefined &&
+        Math.abs(point[axis] - value) <= tolerance &&
+        Math.abs(next[axis] - value) <= tolerance &&
+        Math.hypot(next.x - point.x, next.y - point.y) > tolerance
+      );
+    });
+  const touchX = hasEdge('x', baseBounds.x) && hasEdge('x', baseBounds.x + baseBounds.width);
+  const touchY = hasEdge('y', baseBounds.y) && hasEdge('y', baseBounds.y + baseBounds.height);
+  const usable: RectMm = {
+    x: gapMm,
+    y: gapMm,
+    width: Math.max(0, page.width - gapMm * 2),
+    height: Math.max(0, page.height - gapMm * 2),
+  };
+
+  for (const figureRotation of orientations) {
+    for (const baseRotation of orientations) {
+      const fs = size(figureBounds, figureRotation);
+      const bs = size(baseBounds, baseRotation);
+      const baseGapX = (baseRotation === 0 ? touchX : touchY) ? 0 : gapMm;
+      const baseGapY = (baseRotation === 0 ? touchY : touchX) ? 0 : gapMm;
+      // 縦分割：左に絵柄、右に台座。分割線を絵柄の列境界で全探索する。
+      for (
+        let columns = 1;
+        columns * fs.width + (columns - 1) * gapMm < usable.width;
+        columns += 1
+      ) {
+        const figureWidth = columns * fs.width + (columns - 1) * gapMm;
+        const figures = grid(
+          { x: usable.x, y: usable.y, width: figureWidth, height: usable.height },
+          fs,
+          figureRotation,
+          gapMm,
+          gapMm,
+        );
+        const baseX = usable.x + figureWidth + gapMm;
+        const bases = grid(
+          { x: baseX, y: usable.y, width: usable.x + usable.width - baseX, height: usable.height },
+          bs,
+          baseRotation,
+          baseGapX,
+          baseGapY,
+        );
+        const count = Math.min(figures.length, bases.length);
+        if (count > best.count) best = { count, figures, bases };
+      }
+      // 横分割：上に絵柄、下に台座。
+      for (let rows = 1; rows * fs.height + (rows - 1) * gapMm < usable.height; rows += 1) {
+        const figureHeight = rows * fs.height + (rows - 1) * gapMm;
+        const figures = grid(
+          { x: usable.x, y: usable.y, width: usable.width, height: figureHeight },
+          fs,
+          figureRotation,
+          gapMm,
+          gapMm,
+        );
+        const baseY = usable.y + figureHeight + gapMm;
+        const bases = grid(
+          { x: usable.x, y: baseY, width: usable.width, height: usable.y + usable.height - baseY },
+          bs,
+          baseRotation,
+          baseGapX,
+          baseGapY,
+        );
+        const count = Math.min(figures.length, bases.length);
+        if (count > best.count) best = { count, figures, bases };
+      }
+    }
+  }
+  return {
+    figureBounds,
+    baseBounds,
+    figurePlacements: best.figures.slice(0, best.count),
+    basePlacements: best.bases.slice(0, best.count),
+    setCount: best.count,
+  };
+}
+
+function exportBoundsRects(geometry: ExportGeometryBody): RectMm[] {
+  return [
+    geometry.neck!,
+    geometry.tab!,
+    geometry.base!.bounds,
+    geometry.baseSlot!,
+    ...(geometry.frame ? [geometry.frame] : []),
+  ];
+}
+
+function normalizedPageSize(options: ExportGeometryOptions): { width: number; height: number } {
+  return {
+    width: Math.max(1, options.impositionPageWidthMm ?? DEFAULT_IMPOSITION_PAGE_MM.width),
+    height: Math.max(1, options.impositionPageHeightMm ?? DEFAULT_IMPOSITION_PAGE_MM.height),
+  };
+}
+
+function translatePoint(point: Point, dx: number, dy: number): Point {
+  return { x: point.x + dx, y: point.y + dy };
+}
+
+function translateRect(rect: RectMm, dx: number, dy: number): RectMm {
+  return { ...rect, x: rect.x + dx, y: rect.y + dy };
+}
+
+function translateBaseFootprint(base: BaseFootprintMm, dx: number, dy: number): BaseFootprintMm {
+  return {
+    curve: mapCurve(base.curve, (p) => translatePoint(p, dx, dy)),
+    outline: base.outline.map((p) => translatePoint(p, dx, dy)),
+    bounds: translateRect(base.bounds, dx, dy),
+  };
+}
+
+function translateExportGeometry(
+  geometry: ExportGeometryBody,
+  dx: number,
+  dy: number,
+): ExportGeometryBody {
+  return {
+    contour: geometry.contour.map((p) => translatePoint(p, dx, dy)),
+    sharpCorners: geometry.sharpCorners.map((p) => translatePoint(p, dx, dy)),
+    neck: translateRect(geometry.neck!, dx, dy),
+    tab: translateRect(geometry.tab!, dx, dy),
+    base: translateBaseFootprint(geometry.base!, dx, dy),
+    baseSlot: translateRect(geometry.baseSlot!, dx, dy),
+    image: translateRect(geometry.image, dx, dy),
+    ...(geometry.frame ? { frame: translateRect(geometry.frame, dx, dy) } : {}),
+  };
+}
+
+function mirrorPointX(point: Point, bounds: RectMm): Point {
+  return { x: bounds.x + bounds.width - (point.x - bounds.x), y: point.y };
+}
+
+function mirrorRectX(rect: RectMm, bounds: RectMm): RectMm {
+  return { ...rect, x: bounds.x + bounds.width - (rect.x - bounds.x) - rect.width };
+}
+
+function mirrorBaseFootprintX(base: BaseFootprintMm, bounds: RectMm): BaseFootprintMm {
+  return {
+    curve: mapCurve(base.curve, (p) => mirrorPointX(p, bounds)),
+    outline: base.outline.map((p) => mirrorPointX(p, bounds)),
+    bounds: mirrorRectX(base.bounds, bounds),
+  };
+}
+
+function mirrorExportGeometryX(geometry: ExportGeometryBody, bounds: RectMm): ExportGeometryBody {
+  return {
+    contour: geometry.contour.map((p) => mirrorPointX(p, bounds)),
+    sharpCorners: geometry.sharpCorners.map((p) => mirrorPointX(p, bounds)),
+    neck: mirrorRectX(geometry.neck!, bounds),
+    tab: mirrorRectX(geometry.tab!, bounds),
+    base: mirrorBaseFootprintX(geometry.base!, bounds),
+    baseSlot: mirrorRectX(geometry.baseSlot!, bounds),
+    image: mirrorRectX(geometry.image, bounds),
+    ...(geometry.frame ? { frame: mirrorRectX(geometry.frame, bounds) } : {}),
+  };
+}
+
+function computeImpositionTileLayout(
+  tileWidthMm: number,
+  tileHeightMm: number,
+  pageSize: { width: number; height: number },
+  gapMm: number,
+): { count: number; offsets: Point[] } {
+  if (tileWidthMm <= 0 || tileHeightMm <= 0) {
+    return { count: 1, offsets: [{ x: 0, y: 0 }] };
+  }
+
+  const pageMarginMm = gapMm;
+  const gutterMm = gapMm;
+  const usableWidth = pageSize.width - pageMarginMm * 2;
+  const usableHeight = pageSize.height - pageMarginMm * 2;
+  const columns = Math.max(1, Math.floor((usableWidth + gutterMm) / (tileWidthMm + gutterMm)));
+  const rows = Math.max(1, Math.floor((usableHeight + gutterMm) / (tileHeightMm + gutterMm)));
+  const occupiedWidth = columns * tileWidthMm + (columns - 1) * gutterMm;
+  const occupiedHeight = rows * tileHeightMm + (rows - 1) * gutterMm;
+  const originX = pageMarginMm + Math.max(0, (usableWidth - occupiedWidth) / 2);
+  const originY = pageMarginMm + Math.max(0, (usableHeight - occupiedHeight) / 2);
+  const offsets: Point[] = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      offsets.push({
+        x: originX + column * (tileWidthMm + gutterMm),
+        y: originY + row * (tileHeightMm + gutterMm),
+      });
+    }
+  }
+
+  return { count: columns * rows, offsets };
+}
+
+function expandRect(rect: RectMm, padding: number): RectMm {
+  return {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2,
+  };
+}
+
+function boundsFromGeometry(points: readonly Point[], rects: readonly RectMm[]): RectMm {
+  const xs: number[] = [];
+  const ys: number[] = [];
+
+  for (const p of points) {
+    xs.push(p.x);
+    ys.push(p.y);
+  }
+  for (const rect of rects) {
+    xs.push(rect.x, rect.x + rect.width);
+    ys.push(rect.y, rect.y + rect.height);
+  }
+
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 /** 穴の外接矩形。viewBox 計算用。 */

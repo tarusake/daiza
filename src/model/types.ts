@@ -62,6 +62,10 @@ export interface FigureImage {
   /** ピクセル寸法。 */
   width: number;
   height: number;
+  /** SVGを実寸変更時に推奨DPIで再ラスタライズするための元ファイル。 */
+  svgSourceFile?: File;
+  /** 現在のbitmapを生成した実寸条件の識別子。 */
+  svgScaleKey?: string;
 }
 
 /**
@@ -466,7 +470,7 @@ export interface AnalysisResult {
  * 例外でクラッシュさせず、これらを state に載せて表示する。
  */
 export type AnalysisErrorKind =
-  | 'imageLoadFailed' // PNG 読み込み失敗
+  | 'imageLoadFailed' // PNG / SVG 読み込み失敗
   | 'unsupportedImage' // 非対応画像（RGBA でない等）
   | 'transparentImage' // 全透明でアクリル領域が存在しない
   | 'scaleCalculationFailed' // スケール計算不可（フィギュア高さが接地面までのオフセット以下）

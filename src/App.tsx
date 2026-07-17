@@ -1,19 +1,20 @@
 // アプリのルート。左右2ペイン構成のレイアウトを組み、状態（useAppState）と
-// 各パネルを配線する。PNG 読み込み（TODO 4）・解析パイプライン（TODO 13）・
+// 各パネルを配線する。PNG / SVG 読み込み・解析パイプライン・
 // エクスポート（SVG / Adobe Illustrator）を配線済み。
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { loadBaseShapeSource } from '@/analysis/baseShapeSource';
-import { loadPngFile } from '@/analysis/imageLoader';
+import { loadImageFile, svgScaleKey } from '@/analysis/imageLoader';
 import { computeMmPerPixel } from '@/analysis/scale';
-import { ExportPanel } from '@/components/ExportPanel';
+import { ExportPanel, type ExportSettings } from '@/components/ExportPanel';
 import { HeaderActions } from '@/components/HeaderActions';
 import { LeftPanel } from '@/components/LeftPanel';
 import { PaneResizer } from '@/components/PaneResizer';
 import { Preview } from '@/components/Preview';
 import { ResultPanel } from '@/components/ResultPanel';
-import { generateAi } from '@/export/ai';
+import { generateAi, generateCutlineAi, generateImagePdf } from '@/export/ai';
+import { DEFAULT_IMPOSITION_PAGE_MM } from '@/export/geometry';
 import { generateMockup2dPng } from '@/export/mockup2d';
 import { generateMockup3dPng } from '@/export/mockup3d';
 import { bitmapToPngBytes, bitmapToPngDataUrl } from '@/export/raster';
@@ -22,6 +23,7 @@ import { useAnalysis } from '@/hooks/useAnalysis';
 import { useAppState } from '@/hooks/useAppState';
 import { useTranslation } from '@/locales';
 import { toUnexpectedError } from '@/model/errors';
+import { discardPixels } from '@/model/pixelStore';
 
 /**
  * 生成した成果物をファイルとしてダウンロードさせる。
@@ -46,9 +48,9 @@ function downloadDataUrl(dataUrl: string, fileName: string): void {
 }
 
 /** 画像ファイル名（例 figure.png）から、指定拡張子のダウンロード名を導く。 */
-function exportFileName(imageFileName: string, extension: string): string {
+function exportFileName(imageFileName: string, extension: string, suffix = ''): string {
   const base = imageFileName.replace(/\.[^./\\]+$/, '');
-  return `${base || 'daiza'}.${extension}`;
+  return `${base || 'daiza'}${suffix}.${extension}`;
 }
 
 /** モックアップ PNG 用のファイル名（suffix: mockup2d / mockup3d など）。 */
@@ -63,6 +65,19 @@ function exportMockupFileName(imageFileName: string, suffix: string): string {
  */
 const LEFT_PANE = { initial: 384, min: 280, max: 560 } as const;
 const RIGHT_PANE = { initial: 320, min: 240, max: 480 } as const;
+
+const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  partGapMm: 20,
+  includeFrame: false,
+  framePaddingMm: 5,
+  imposeA4: false,
+  separatePartsImposition: false,
+  impositionGapMm: 5,
+  impositionPageWidthMm: DEFAULT_IMPOSITION_PAGE_MM.width,
+  impositionPageHeightMm: DEFAULT_IMPOSITION_PAGE_MM.height,
+  redCutLinesOnly: false,
+  mirrorArtwork: false,
+};
 
 function App() {
   const { t } = useTranslation();
@@ -88,21 +103,59 @@ function App() {
     (file: File): void => {
       void (async () => {
         try {
-          const result = await loadPngFile(file);
+          const result = await loadImageFile(file, state.parameters);
           if (result.ok) {
             actions.setImage(result.image);
           } else {
             actions.failAnalysis(result.error);
           }
         } catch (cause) {
-          // loadPngFile は内部で例外を型付きエラーへ畳むが、その想定を外れた
+          // loadImageFile は内部で例外を型付きエラーへ畳むが、その想定を外れた
           // 失敗（環境依存等）でも未処理の Promise 拒否で終わらせず UI へ出す。
           actions.failAnalysis(toUnexpectedError(cause));
         }
       })();
     },
-    [actions],
+    [actions, state.parameters],
   );
+
+  // SVGは実寸に対して推奨DPIになるよう読み込み時にラスタライズしているため、
+  // フィギュア高さなどが変わったら元SVGから新しいピクセル寸法で作り直す。
+  // 数値の連続入力中は最後の条件だけをデコードし、古い非同期結果は採用しない。
+  useEffect(() => {
+    const image = state.image;
+    if (!image?.svgSourceFile) {
+      return;
+    }
+    const nextScaleKey = svgScaleKey(state.parameters);
+    if (image.svgScaleKey === nextScaleKey) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void loadImageFile(image.svgSourceFile!, state.parameters).then((loaded) => {
+        if (cancelled) {
+          if (loaded.ok) {
+            discardPixels(loaded.image.id);
+            loaded.image.bitmap.close();
+          }
+          return;
+        }
+        if (loaded.ok) {
+          actions.setImage(loaded.image);
+          window.setTimeout(() => image.bitmap.close(), 0);
+        } else {
+          actions.failAnalysis(loaded.error);
+        }
+      });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [state.image, state.parameters, actions]);
 
   // 台座形状ソース（任意形状）の読み込み口。画像と同じく、失敗は例外にせず型付きエラーを
   // state へ載せて UI（プレビュー前面のオーバーレイ）へ出す。成功時は reducer が台座奥行を
@@ -130,7 +183,7 @@ function App() {
     (file: File): void => {
       void (async () => {
         try {
-          const result = await loadPngFile(file);
+          const result = await loadImageFile(file, state.parameters);
           if (result.ok) {
             actions.setBackImage(result.image);
           } else {
@@ -141,7 +194,7 @@ function App() {
         }
       })();
     },
-    [actions],
+    [actions, state.parameters],
   );
 
   // SVG エクスポート：解析結果がある時のみ有効。undefined を渡すと LeftPanel の
@@ -162,6 +215,13 @@ function App() {
   }, [result, image, parameters]);
   // SVG は線データのみが既定。絵柄が要るときだけ画像を埋め込む（ファイルは重くなる）。
   const [embedImageInSvg, setEmbedImageInSvg] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS);
+  const impositionPreviewImageHref = useMemo(() => {
+    if (!image) {
+      return undefined;
+    }
+    return bitmapToPngDataUrl(image.bitmap, exportSettings.mirrorArtwork);
+  }, [image, exportSettings.mirrorArtwork]);
   // .ai は PDF 生成と画像の PNG 化を伴い、大きな画像では体感できる時間がかかる。
   // 生成中はボタンを止め、二重実行を防ぐ。
   const [exporting, setExporting] = useState(false);
@@ -171,10 +231,20 @@ function App() {
       return;
     }
     try {
-      const svg = generateSvg(
-        result,
-        embedImageInSvg ? { imageHref: bitmapToPngDataUrl(image.bitmap) } : {},
-      );
+      const svg = generateSvg(result, {
+        ...(embedImageInSvg
+          ? { imageHref: bitmapToPngDataUrl(image.bitmap, exportSettings.mirrorArtwork) }
+          : {}),
+        partGapMm: exportSettings.partGapMm,
+        includeFrame: exportSettings.includeFrame,
+        framePaddingMm: exportSettings.framePaddingMm,
+        imposeA4: exportSettings.imposeA4,
+        impositionGapMm: exportSettings.impositionGapMm,
+        impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+        impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+        redCutLinesOnly: exportSettings.redCutLinesOnly,
+        mirrorX: exportSettings.mirrorArtwork,
+      });
       downloadBlob(
         new Blob([svg], { type: 'image/svg+xml' }),
         exportFileName(image.fileName, 'svg'),
@@ -183,7 +253,7 @@ function App() {
       // エクスポート失敗でアプリを落とさず、エラー表示へ畳む（SPEC のエラーハンドリング）。
       actions.failAnalysis(toUnexpectedError(cause));
     }
-  }, [result, image, embedImageInSvg, actions]);
+  }, [result, image, embedImageInSvg, exportSettings, actions]);
 
   // .ai は絵柄画像を必ず含む「絵柄付きアウトライン」。実体は PDF 互換のドキュメントで、
   // pdf-lib を dynamic import するため生成が非同期になる。
@@ -194,7 +264,22 @@ function App() {
     setExporting(true);
     void (async () => {
       try {
-        const bytes = await generateAi(result, { bytes: await bitmapToPngBytes(image.bitmap) });
+        const bytes = await generateAi(
+          result,
+          { bytes: await bitmapToPngBytes(image.bitmap, exportSettings.mirrorArtwork) },
+          {
+            partGapMm: exportSettings.partGapMm,
+            includeFrame: exportSettings.includeFrame,
+            framePaddingMm: exportSettings.framePaddingMm,
+            imposeA4: exportSettings.imposeA4,
+            separatePartsImposition: exportSettings.separatePartsImposition,
+            impositionGapMm: exportSettings.impositionGapMm,
+            impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+            impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+            redCutLinesOnly: exportSettings.redCutLinesOnly,
+            mirrorX: exportSettings.mirrorArtwork,
+          },
+        );
         downloadBlob(
           // .ai の中身は PDF なので MIME も PDF とする（保存名の拡張子が .ai であることが本質）。
           new Blob([bytes as BlobPart], { type: 'application/pdf' }),
@@ -206,7 +291,75 @@ function App() {
         setExporting(false);
       }
     })();
-  }, [result, image, actions]);
+  }, [result, image, exportSettings, actions]);
+
+  // カットラインだけの .ai。絵柄画像は含めず、同じ面付け・反転・赤線設定を適用する。
+  const handleExportCutlineAi = useCallback(() => {
+    if (!result || !image) {
+      return;
+    }
+    setExporting(true);
+    void (async () => {
+      try {
+        const bytes = await generateCutlineAi(result, {
+          partGapMm: exportSettings.partGapMm,
+          includeFrame: exportSettings.includeFrame,
+          framePaddingMm: exportSettings.framePaddingMm,
+          imposeA4: exportSettings.imposeA4,
+          separatePartsImposition: exportSettings.separatePartsImposition,
+          impositionGapMm: exportSettings.impositionGapMm,
+          impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+          impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+          redCutLinesOnly: exportSettings.redCutLinesOnly,
+          mirrorX: exportSettings.mirrorArtwork,
+        });
+        downloadBlob(
+          new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+          exportFileName(image.fileName, 'ai', '-cutline'),
+        );
+      } catch (cause) {
+        actions.failAnalysis(toUnexpectedError(cause));
+      } finally {
+        setExporting(false);
+      }
+    })();
+  }, [result, image, exportSettings, actions]);
+
+  // 絵柄画像だけの PDF。印刷用にカットラインを含めず、面付け・左右反転は同じ設定で出す。
+  const handleExportImagePdf = useCallback(() => {
+    if (!result || !image) {
+      return;
+    }
+    setExporting(true);
+    void (async () => {
+      try {
+        const bytes = await generateImagePdf(
+          result,
+          { bytes: await bitmapToPngBytes(image.bitmap, exportSettings.mirrorArtwork) },
+          {
+            partGapMm: exportSettings.partGapMm,
+            includeFrame: exportSettings.includeFrame,
+            framePaddingMm: exportSettings.framePaddingMm,
+            imposeA4: exportSettings.imposeA4,
+            separatePartsImposition: exportSettings.separatePartsImposition,
+            impositionGapMm: exportSettings.impositionGapMm,
+            impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+            impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+            redCutLinesOnly: exportSettings.redCutLinesOnly,
+            mirrorX: exportSettings.mirrorArtwork,
+          },
+        );
+        downloadBlob(
+          new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+          exportFileName(image.fileName, 'pdf', '-image'),
+        );
+      } catch (cause) {
+        actions.failAnalysis(toUnexpectedError(cause));
+      } finally {
+        setExporting(false);
+      }
+    })();
+  }, [result, image, exportSettings, actions]);
 
   // 2D 広告用モックアップ：前面図を商品写真風に仕上げた透過 PNG。
   const handleExportMockup2d = useCallback(() => {
@@ -339,11 +492,19 @@ function App() {
           <ExportPanel
             embedImageInSvg={embedImageInSvg}
             onEmbedImageInSvgChange={setEmbedImageInSvg}
+            settings={exportSettings}
+            onSettingsChange={setExportSettings}
+            result={state.result}
+            {...(impositionPreviewImageHref !== undefined
+              ? { previewImageHref: impositionPreviewImageHref }
+              : {})}
             exporting={exporting}
             {...(result
               ? {
                   onExportSvg: handleExportSvg,
                   onExportAi: handleExportAi,
+                  onExportCutlineAi: handleExportCutlineAi,
+                  onExportImagePdf: handleExportImagePdf,
                   onExportMockup2d: handleExportMockup2d,
                   onExportMockup3d: handleExportMockup3d,
                 }

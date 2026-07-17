@@ -13,14 +13,14 @@
 
 import {
   buildExportGeometry,
-  EXPORT_COLORS,
+  exportColors,
   fmt,
-  strokeWidthMm,
   type ExportGeometry,
   type RectMm,
+  strokeWidthMm,
 } from '@/export/geometry';
-import type { AnalysisResult } from '@/model/types';
-import { closedCurvePathData, curvePathData } from '@/utils/curve';
+import type { AnalysisResult, Point } from '@/model/types';
+import { closedCurvePathData, curvePathData, mapCurve } from '@/utils/curve';
 
 /** generateSvg の切り替え。 */
 export interface SvgExportOptions {
@@ -30,20 +30,82 @@ export interface SvgExportOptions {
    * とどめ、生成は呼び出し側（export/raster）に任せる。
    */
   imageHref?: string;
+  /** 絵柄パーツと台座パーツの間隔(mm)。 */
+  partGapMm?: number;
+  /** 図形全体の外側に枠を付けるか。 */
+  includeFrame?: boolean;
+  /** 枠を付ける場合の図形から枠までの余白(mm)。 */
+  framePaddingMm?: number;
+  /** 面付けページへ原寸で配置するか。 */
+  imposeA4?: boolean;
+  impositionGapMm?: number;
+  /** 面付けページ幅(mm)。 */
+  impositionPageWidthMm?: number;
+  /** 面付けページ高さ(mm)。 */
+  impositionPageHeightMm?: number;
+  /** カットラインだけを赤で出すか。 */
+  redCutLinesOnly?: boolean;
+  /** 書き出し幾何全体を左右反転するか。 */
+  mirrorX?: boolean;
 }
 
-/** 矩形を SVG rect 要素文字列へ変換する。 */
-function rectElement(rect: RectMm, attrs: string): string {
-  return `<rect x="${fmt(rect.x)}" y="${fmt(rect.y)}" width="${fmt(rect.width)}" height="${fmt(rect.height)}" ${attrs} />`;
+function tilePoint(geometry: ExportGeometry, offset: Point, point: Point): Point {
+  if (geometry.tileRotationDeg === 0) {
+    return { x: point.x + offset.x, y: point.y + offset.y };
+  }
+
+  const bounds = geometry.tileBounds;
+  return {
+    x: bounds.x + offset.x + bounds.height - (point.y - bounds.y),
+    y: bounds.y + offset.y + (point.x - bounds.x),
+  };
+}
+
+function rectPathForTile(geometry: ExportGeometry, offset: Point, rect: RectMm): string {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  const corners = [
+    { x: rect.x, y: rect.y },
+    { x: right, y: rect.y },
+    { x: right, y: bottom },
+    { x: rect.x, y: bottom },
+  ].map((p) => tilePoint(geometry, offset, p));
+  const [p0, p1, p2, p3] = corners as [Point, Point, Point, Point];
+  return (
+    `M ${fmt(p0.x)} ${fmt(p0.y)} ` +
+    `L ${fmt(p1.x)} ${fmt(p1.y)} ` +
+    `L ${fmt(p2.x)} ${fmt(p2.y)} ` +
+    `L ${fmt(p3.x)} ${fmt(p3.y)} Z`
+  );
+}
+
+function pathElement(pathData: string, attrs: string): string {
+  return `<path d="${pathData}" ${attrs} />`;
 }
 
 /** 絵柄画像を実寸で置く image 要素。カットラインと同じ mm 座標系にそのまま乗る。 */
-function imageElement(geometry: ExportGeometry, href: string): string {
+function imageElement(geometry: ExportGeometry, href: string, offset: Point): string {
   const { image } = geometry;
+  const transform =
+    geometry.tileRotationDeg === 0
+      ? `translate(${fmt(offset.x)} ${fmt(offset.y)})`
+      : imageRotationMatrix(geometry, offset);
   return (
     `<image href="${href}" x="${fmt(image.x)}" y="${fmt(image.y)}" ` +
-    `width="${fmt(image.width)}" height="${fmt(image.height)}" preserveAspectRatio="none" />`
+    `width="${fmt(image.width)}" height="${fmt(image.height)}" preserveAspectRatio="none" ` +
+    `transform="${transform}" />`
   );
+}
+
+function imageRotationMatrix(geometry: ExportGeometry, offset: Point): string {
+  const bounds = geometry.tileBounds;
+  const a = 0;
+  const b = 1;
+  const c = -1;
+  const d = 0;
+  const e = bounds.x + offset.x + bounds.height + bounds.y;
+  const f = bounds.y + offset.y - bounds.x;
+  return `matrix(${fmt(a)} ${fmt(b)} ${fmt(c)} ${fmt(d)} ${fmt(e)} ${fmt(f)})`;
 }
 
 /**
@@ -54,61 +116,88 @@ function imageElement(geometry: ExportGeometry, href: string): string {
  */
 export function generateSvg(result: AnalysisResult, options: SvgExportOptions = {}): string {
   const { imageHref } = options;
-  const geometry = buildExportGeometry(result, { includeImage: imageHref !== undefined });
+  const geometry = buildExportGeometry(result, {
+    includeImage: imageHref !== undefined,
+    ...(options.partGapMm !== undefined ? { partGapMm: options.partGapMm } : {}),
+    ...(options.includeFrame !== undefined ? { includeFrame: options.includeFrame } : {}),
+    ...(options.framePaddingMm !== undefined ? { framePaddingMm: options.framePaddingMm } : {}),
+    ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
+    ...(options.impositionGapMm !== undefined ? { impositionGapMm: options.impositionGapMm } : {}),
+    ...(options.impositionPageWidthMm !== undefined
+      ? { impositionPageWidthMm: options.impositionPageWidthMm }
+      : {}),
+    ...(options.impositionPageHeightMm !== undefined
+      ? { impositionPageHeightMm: options.impositionPageHeightMm }
+      : {}),
+    ...(options.mirrorX !== undefined ? { mirrorX: options.mirrorX } : {}),
+  });
   const { viewBox } = geometry;
+  const redCutLinesOnly = options.redCutLinesOnly === true;
+  const colors = exportColors(redCutLinesOnly);
 
   const strokeAttr = `stroke-width="${fmt(strokeWidthMm(viewBox))}"`;
   const viewBoxAttr = `${fmt(viewBox.x)} ${fmt(viewBox.y)} ${fmt(viewBox.width)} ${fmt(viewBox.height)}`;
 
-  // 外形（カットライン）は折れ線ではなく曲線補完した path（C コマンド）で出力する（SPEC 要件）。
-  // 差込部の肩（首部とツメの接合部）だけは丸めず直角のまま出す（加工寸法に直結するため）。
-  const contourEl =
-    `<path d="${closedCurvePathData(geometry.contour, fmt, { sharpCorners: geometry.sharpCorners })}" ` +
-    `fill="none" stroke="${EXPORT_COLORS.contour}" ${strokeAttr} />`;
-  // 差込部は首部・ツメの 2 矩形。どちらも外形（カットライン）に含まれるが、加工時に
-  // 差込部だと判別できるよう独立した矩形としても出力する。keychain モードでは存在しない。
-  const neckEl = geometry.neck
-    ? rectElement(
-        geometry.neck,
-        `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
-      )
-    : '';
-  const tabEl = geometry.tab
-    ? rectElement(
-        geometry.tab,
-        `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
-      )
-    : '';
-  // 台座は「台座形状」で選んだ footprint の上面図。矩形以外（円・楕円・角丸・任意形状）も
-  // カットラインと同じく曲線コマンドで出力する（footprint のパス表現をそのまま写す）。
-  const baseEl = geometry.base
-    ? `<path d="${curvePathData(geometry.base.curve, fmt)}" ` +
-      `fill="none" stroke="${EXPORT_COLORS.base}" ${strokeAttr} />`
-    : '';
-  // 台座に切るスリット（差込口）。台座の内側に置かれるため、台座より後に描いて重ねる。
-  const baseSlotEl = geometry.baseSlot
-    ? rectElement(
-        geometry.baseSlot,
-        `fill="none" stroke="${EXPORT_COLORS.slot}" ${strokeAttr}`,
-      )
-    : '';
-
-  // キーホルダー穴。内側の切り抜き線として contour より後に描く。
-  const holeEl = geometry.hole
-    ? `<circle cx="${fmt(geometry.hole.center.x)}" cy="${fmt(geometry.hole.center.y)}" r="${fmt(geometry.hole.radius)}" fill="none" stroke="rgb(239, 68, 68)" ${strokeAttr} />`
-    : '';
-
   // 画像は線データに隠されないよう最背面（先頭）へ。fill/stroke の既定は g に持たせるが、
   // image はそれらの影響を受けないのでグループ内に置いて差し支えない。
-  const elements = [
-    ...(imageHref !== undefined ? [imageElement(geometry, imageHref)] : []),
-    contourEl,
-    neckEl,
-    tabEl,
-    baseEl,
-    baseSlotEl,
-    holeEl,
-  ].filter(Boolean);
+  const elements = geometry.tileOffsets.flatMap((offset) => {
+    // 外形（カットライン）は折れ線ではなく曲線補完した path（C コマンド）で出力する（SPEC 要件）。
+    // 差込部の肩（首部とツメの接合部）だけは丸めず直角のまま出す（加工寸法に直結するため）。
+    const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
+    const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
+    const contourEl = pathElement(
+      closedCurvePathData(contour, fmt, { sharpCorners }),
+      `fill="none" stroke="${colors.contour}" ${strokeAttr}`,
+    );
+    const slotElements = redCutLinesOnly || !geometry.neck || !geometry.tab
+      ? []
+      : [
+          pathElement(
+            rectPathForTile(geometry, offset, geometry.neck),
+            `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
+          ),
+          pathElement(
+            rectPathForTile(geometry, offset, geometry.tab),
+            `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
+          ),
+        ];
+    // 台座は「台座形状」で選んだ footprint の上面図。矩形以外も曲線コマンドで出力する。
+    const baseEl = geometry.base
+      ? pathElement(
+          curvePathData(mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p)), fmt),
+          `fill="none" stroke="${colors.base}" ${strokeAttr}`,
+        )
+      : undefined;
+    const baseSlotEl = geometry.baseSlot
+      ? pathElement(
+          rectPathForTile(geometry, offset, geometry.baseSlot),
+          `fill="none" stroke="${colors.baseSlot}" ${strokeAttr}`,
+        )
+      : undefined;
+    const holeEl = geometry.hole
+      ? (() => {
+          const center = tilePoint(geometry, offset, geometry.hole.center);
+          return `<circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(geometry.hole.radius)}" fill="none" stroke="${colors.contour}" ${strokeAttr} />`;
+        })()
+      : undefined;
+    const frameEl =
+      geometry.frame !== undefined
+        ? pathElement(
+            rectPathForTile(geometry, offset, geometry.frame),
+            `fill="none" stroke="${colors.frame}" ${strokeAttr}`,
+          )
+        : undefined;
+
+    return [
+      ...(imageHref !== undefined ? [imageElement(geometry, imageHref, offset)] : []),
+      contourEl,
+      ...slotElements,
+      ...(baseEl !== undefined ? [baseEl] : []),
+      ...(baseSlotEl !== undefined ? [baseSlotEl] : []),
+      ...(holeEl !== undefined ? [holeEl] : []),
+      ...(frameEl !== undefined ? [frameEl] : []),
+    ];
+  });
 
   // width/height に "mm" を付け、viewBox の数値を mm と 1:1 対応させて実寸出力とする。
   return [

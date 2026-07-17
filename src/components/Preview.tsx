@@ -105,7 +105,7 @@ export interface PreviewProps {
    * 表示・非表示がレイアウトへ波及しないこの位置で受け取る。
    */
   error?: AnalysisError | null;
-  /** ドロップされた PNG ファイルを通知する。未指定ならドロップは受け付けない。 */
+  /** ドロップされた PNG / SVG ファイルを通知する。未指定ならドロップは受け付けない。 */
   onImageFile?: (file: File) => void;
 }
 

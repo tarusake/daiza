@@ -55,7 +55,7 @@ export interface LeftPanelProps {
   parameters: AnalysisParameters;
   /** パラメータの部分更新を通知する（再解析トリガー）。 */
   onParametersChange: (parameters: Partial<AnalysisParameters>) => void;
-  /** ユーザーが選択した PNG ファイルを通知する。未指定なら読み込みボタンは無効。 */
+  /** ユーザーが選択した PNG / SVG ファイルを通知する。未指定なら読み込みボタンは無効。 */
   onImageFile?: (file: File) => void;
   /** 背面アクリル板用に読み込んだ画像。未読込なら null。 */
   backImage?: FigureImage | null;
@@ -242,7 +242,7 @@ export function LeftPanel({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png"
+            accept="image/png,image/svg+xml,.png,.svg"
             className="hidden"
             onChange={(event) => {
               const file = event.target.files?.[0];
