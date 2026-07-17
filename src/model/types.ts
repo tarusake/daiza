@@ -62,6 +62,10 @@ export interface FigureImage {
   /** ピクセル寸法。 */
   width: number;
   height: number;
+  /** SVGを実寸変更時に推奨DPIで再ラスタライズするための元ファイル。 */
+  svgSourceFile?: File;
+  /** 現在のbitmapを生成した実寸条件の識別子。 */
+  svgScaleKey?: string;
 }
 
 /**

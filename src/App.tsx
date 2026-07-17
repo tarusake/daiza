@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { loadBaseShapeSource } from '@/analysis/baseShapeSource';
-import { loadImageFile } from '@/analysis/imageLoader';
+import { loadImageFile, svgScaleKey } from '@/analysis/imageLoader';
 import { computeMmPerPixel } from '@/analysis/scale';
 import { ExportPanel, type ExportSettings } from '@/components/ExportPanel';
 import { HeaderActions } from '@/components/HeaderActions';
@@ -23,6 +23,7 @@ import { useAnalysis } from '@/hooks/useAnalysis';
 import { useAppState } from '@/hooks/useAppState';
 import { useTranslation } from '@/locales';
 import { toUnexpectedError } from '@/model/errors';
+import { discardPixels } from '@/model/pixelStore';
 
 /**
  * 生成した成果物をファイルとしてダウンロードさせる。
@@ -117,6 +118,44 @@ function App() {
     },
     [actions, state.parameters],
   );
+
+  // SVGは実寸に対して推奨DPIになるよう読み込み時にラスタライズしているため、
+  // フィギュア高さなどが変わったら元SVGから新しいピクセル寸法で作り直す。
+  // 数値の連続入力中は最後の条件だけをデコードし、古い非同期結果は採用しない。
+  useEffect(() => {
+    const image = state.image;
+    if (!image?.svgSourceFile) {
+      return;
+    }
+    const nextScaleKey = svgScaleKey(state.parameters);
+    if (image.svgScaleKey === nextScaleKey) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void loadImageFile(image.svgSourceFile!, state.parameters).then((loaded) => {
+        if (cancelled) {
+          if (loaded.ok) {
+            discardPixels(loaded.image.id);
+            loaded.image.bitmap.close();
+          }
+          return;
+        }
+        if (loaded.ok) {
+          actions.setImage(loaded.image);
+          window.setTimeout(() => image.bitmap.close(), 0);
+        } else {
+          actions.failAnalysis(loaded.error);
+        }
+      });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [state.image, state.parameters, actions]);
 
   // 台座形状ソース（任意形状）の読み込み口。画像と同じく、失敗は例外にせず型付きエラーを
   // state へ載せて UI（プレビュー前面のオーバーレイ）へ出す。成功時は reducer が台座奥行を

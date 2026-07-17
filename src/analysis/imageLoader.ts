@@ -40,6 +40,16 @@ let nextImageId = 0;
 /** 1 inch = 25.4mm。指定したフィギュア高さから350dpiの画素数へ換算する。 */
 const MM_PER_INCH = 25.4;
 
+/** SVGのラスタライズ解像度へ影響する実寸条件を比較可能な文字列にする。 */
+export function svgScaleKey(parameters: ScaleParameters): string {
+  return [
+    parameters.figureHeightMm,
+    parameters.cutLineMarginMm,
+    parameters.plateLiftMm,
+    parameters.thicknessMm,
+  ].join('/');
+}
+
 function looksLikeSvg(file: File): boolean {
   return file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
 }
@@ -164,12 +174,11 @@ export async function loadImageFile(
     return fail('unsupportedImage');
   }
 
+  const isSvg = looksLikeSvg(file);
   // SVG は互換デコード経路、PNG は createImageBitmap でローカルにデコードする。
   let bitmap: ImageBitmap;
   try {
-    bitmap = looksLikeSvg(file)
-      ? await decodeSvg(file, scaleParameters)
-      : await createImageBitmap(file);
+    bitmap = isSvg ? await decodeSvg(file, scaleParameters) : await createImageBitmap(file);
   } catch {
     return fail('imageLoadFailed');
   }
@@ -218,6 +227,15 @@ export async function loadImageFile(
 
   return {
     ok: true,
-    image: { id, fileName: file.name, bitmap, width, height },
+    image: {
+      id,
+      fileName: file.name,
+      bitmap,
+      width,
+      height,
+      ...(isSvg
+        ? { svgSourceFile: file, svgScaleKey: svgScaleKey(scaleParameters) }
+        : {}),
+    },
   };
 }

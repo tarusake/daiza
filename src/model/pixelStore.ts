@@ -32,3 +32,8 @@ export function takePixels(imageId: number): ImageData | null {
   store.delete(imageId);
   return pixels;
 }
+
+/** 採用されなかった非同期画像読み込みのピクセルを破棄する。 */
+export function discardPixels(imageId: number): void {
+  store.delete(imageId);
+}
