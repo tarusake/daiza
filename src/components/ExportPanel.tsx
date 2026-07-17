@@ -196,13 +196,11 @@ export function ExportPanel({
           </div>
         )}
 
-        {settings.imposeA4 && (
-          <ImpositionPreview
-            result={result}
-            settings={settings}
-            {...(previewImageHref !== undefined ? { imageHref: previewImageHref } : {})}
-          />
-        )}
+        <ImpositionPreview
+          result={result}
+          settings={settings}
+          {...(previewImageHref !== undefined ? { imageHref: previewImageHref } : {})}
+        />
 
         <div className="flex items-center gap-2">
           <Checkbox

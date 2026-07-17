@@ -21,6 +21,7 @@ export interface ImpositionPreviewSettings {
   partGapMm: number;
   includeFrame: boolean;
   framePaddingMm: number;
+  imposeA4: boolean;
   impositionPageWidthMm: number;
   impositionPageHeightMm: number;
   redCutLinesOnly: boolean;
@@ -84,7 +85,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
       partGapMm: settings.partGapMm,
       includeFrame: settings.includeFrame,
       framePaddingMm: settings.framePaddingMm,
-      imposeA4: true,
+      imposeA4: settings.imposeA4,
       impositionPageWidthMm: settings.impositionPageWidthMm,
       impositionPageHeightMm: settings.impositionPageHeightMm,
       mirrorX: settings.mirrorArtwork,
@@ -116,7 +117,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
           className="block h-auto w-full"
           viewBox={viewBox}
           role="img"
-          aria-label="面付けプレビュー"
+          aria-label={settings.imposeA4 ? '面付けプレビュー' : '書き出しプレビュー'}
         >
           <rect
             x={0}

@@ -135,11 +135,11 @@ function App() {
   const [embedImageInSvg, setEmbedImageInSvg] = useState(false);
   const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS);
   const impositionPreviewImageHref = useMemo(() => {
-    if (!image || !exportSettings.imposeA4) {
+    if (!image) {
       return undefined;
     }
     return bitmapToPngDataUrl(image.bitmap, exportSettings.mirrorArtwork);
-  }, [image, exportSettings.imposeA4, exportSettings.mirrorArtwork]);
+  }, [image, exportSettings.mirrorArtwork]);
   // .ai は PDF 生成と画像の PNG 化を伴い、大きな画像では体感できる時間がかかる。
   // 生成中はボタンを止め、二重実行を防ぐ。
   const [exporting, setExporting] = useState(false);
