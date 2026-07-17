@@ -72,7 +72,7 @@ type PipelineErrorKind = Extract<
 /** UI へ提示するエラーメッセージ（日本語）。 */
 const ERROR_MESSAGES: Record<PipelineErrorKind, string> = {
   transparentImage:
-    'アクリル領域が見つからないため解析できません。アルファ閾値を下げる、または透明でないPNG画像を選択してください。',
+    'アクリル領域が見つからないため解析できません。アルファ閾値を下げる、または透明でないPNG / SVG画像を選択してください。',
   scaleCalculationFailed:
     'フィギュア高さが小さすぎます。フィギュア高さは「接地面（台座底面）からカットライン（絵柄＋余白）の上端まで」の全高です。カットライン余白×2＋アクリル板の持ち上げ量＋板厚 より大きい値を指定してください。',
   slotPlacementFailed:

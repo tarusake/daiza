@@ -410,7 +410,7 @@ export interface AnalysisResult {
  * 例外でクラッシュさせず、これらを state に載せて表示する。
  */
 export type AnalysisErrorKind =
-  | 'imageLoadFailed' // PNG 読み込み失敗
+  | 'imageLoadFailed' // PNG / SVG 読み込み失敗
   | 'unsupportedImage' // 非対応画像（RGBA でない等）
   | 'transparentImage' // 全透明でアクリル領域が存在しない
   | 'scaleCalculationFailed' // スケール計算不可（フィギュア高さが接地面までのオフセット以下）

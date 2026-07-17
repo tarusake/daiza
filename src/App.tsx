@@ -1,11 +1,11 @@
 // アプリのルート。左右2ペイン構成のレイアウトを組み、状態（useAppState）と
-// 各パネルを配線する。PNG 読み込み（TODO 4）・解析パイプライン（TODO 13）・
+// 各パネルを配線する。PNG / SVG 読み込み・解析パイプライン・
 // エクスポート（SVG / Adobe Illustrator）を配線済み。
 
 import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 
 import { loadBaseShapeSource } from '@/analysis/baseShapeSource';
-import { loadPngFile } from '@/analysis/imageLoader';
+import { loadImageFile } from '@/analysis/imageLoader';
 import { computeMmPerPixel } from '@/analysis/scale';
 import { ExportPanel, type ExportSettings } from '@/components/ExportPanel';
 import { HeaderActions } from '@/components/HeaderActions';
@@ -78,20 +78,20 @@ function App() {
     (file: File): void => {
       void (async () => {
         try {
-          const result = await loadPngFile(file);
+          const result = await loadImageFile(file, state.parameters);
           if (result.ok) {
             actions.setImage(result.image);
           } else {
             actions.failAnalysis(result.error);
           }
         } catch (cause) {
-          // loadPngFile は内部で例外を型付きエラーへ畳むが、その想定を外れた
+          // loadImageFile は内部で例外を型付きエラーへ畳むが、その想定を外れた
           // 失敗（環境依存等）でも未処理の Promise 拒否で終わらせず UI へ出す。
           actions.failAnalysis(toUnexpectedError(cause));
         }
       })();
     },
-    [actions],
+    [actions, state.parameters],
   );
 
   // 台座形状ソース（任意形状）の読み込み口。画像と同じく、失敗は例外にせず型付きエラーを

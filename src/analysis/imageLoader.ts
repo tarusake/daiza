@@ -1,4 +1,4 @@
-// PNG 読み込み：File を受け取り、ブラウザ内でデコードして FigureImage を得る。
+// 画像読み込み：PNG / SVG の File を受け取り、ブラウザ内で RGBA へデコードして FigureImage を得る。
 //
 // このモジュールは「入力の受け口」であり、解析パイプライン（重心・差込口…）の
 // 前段に位置する純粋ロジック。React には依存しない。
@@ -10,6 +10,7 @@
 // クラッシュせずにメッセージ表示へマッピングできるようにするため。
 
 import { depositPixels } from '@/model/pixelStore';
+import { computeOutsideArtworkMm, RECOMMENDED_DPI, type ScaleParameters } from '@/analysis/scale';
 import type { AnalysisError, AnalysisErrorKind, FigureImage } from '@/model/types';
 import { hasVisiblePixels, MIN_ALPHA_THRESHOLD } from '@/utils/image';
 
@@ -21,10 +22,11 @@ type ImageLoadErrorKind = Extract<
 
 /** UI へ提示するエラーメッセージ（日本語）。 */
 const ERROR_MESSAGES: Record<ImageLoadErrorKind, string> = {
-  imageLoadFailed: 'PNG画像の読み込みに失敗しました。ファイルが破損していないか確認してください。',
-  unsupportedImage: '対応していない画像形式です。RGBA形式のPNG画像を選択してください。',
+  imageLoadFailed:
+    '画像の読み込みに失敗しました。PNG / SVGファイルが破損していないか、SVGに表示サイズまたはviewBoxがあるか確認してください。',
+  unsupportedImage: '対応していない画像形式です。PNGまたはSVG画像を選択してください。',
   transparentImage:
-    '不透明なピクセルが見つかりません。透明部分以外（α>0）を含むPNG画像を選択してください。',
+    '不透明なピクセルが見つかりません。透明部分以外（α>0）を含むPNGまたはSVG画像を選択してください。',
 };
 
 /** 画像読み込みの結果。成功なら FigureImage、失敗なら型付きエラー。 */
@@ -44,17 +46,116 @@ function fail(kind: ImageLoadErrorKind): ImageLoadResult {
  */
 let nextImageId = 0;
 
-/**
- * PNG ファイルかどうかを緩く判定する。
- * MIME 型が空になる環境（一部の D&D 等）もあるため、拡張子も併せて許容する。
- * 中身の厳密な検証は createImageBitmap のデコード可否に委ねる。
- */
-function looksLikePng(file: File): boolean {
-  return file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
+/** 1 inch = 25.4mm。指定したフィギュア高さから350dpiの画素数へ換算する。 */
+const MM_PER_INCH = 25.4;
+
+function looksLikeSvg(file: File): boolean {
+  return file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
 }
 
 /**
- * PNG ファイルを読み込み、描画用 ImageBitmap を持つ FigureImage を返す。
+ * PNG / SVG ファイルかどうかを緩く判定する。
+ * MIME 型が空になる環境（一部の D&D 等）もあるため、拡張子も併せて許容する。
+ * 中身の厳密な検証は createImageBitmap のデコード可否に委ねる。
+ */
+function looksLikeSupportedImage(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    file.type === 'image/png' ||
+    file.type === 'image/svg+xml' ||
+    name.endsWith('.png') ||
+    name.endsWith('.svg')
+  );
+}
+
+/** SVG の viewBox から縦横比を取得する。width/height の単位には依存しない。 */
+function svgAspectRatio(svg: SVGSVGElement): number | null {
+  const viewBox = svg
+    .getAttribute('viewBox')
+    ?.trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (viewBox?.length === 4) {
+    const width = viewBox[2];
+    const height = viewBox[3];
+    if (width && height && width > 0 && height > 0) return width / height;
+  }
+
+  const width = Number.parseFloat(svg.getAttribute('width') ?? '');
+  const height = Number.parseFloat(svg.getAttribute('height') ?? '');
+  return width > 0 && height > 0 ? width / height : null;
+}
+
+/**
+ * SVG を一度 HTMLImageElement へ読み込み、Canvas から ImageBitmap 化する。
+ * createImageBitmap が SVG Blob を直接扱えないブラウザでも動作する互換経路。
+ */
+async function decodeSvg(file: File, scaleParameters: ScaleParameters): Promise<ImageBitmap> {
+  const text = await file.text();
+  const documentNode = new DOMParser().parseFromString(text, 'image/svg+xml');
+  if (documentNode.getElementsByTagName('parsererror').length > 0) {
+    throw new Error('Invalid SVG');
+  }
+  const svg = documentNode.documentElement as unknown as SVGSVGElement;
+  if (svg.localName !== 'svg') throw new Error('Missing SVG root');
+
+  // SVG は画像として扱い、実行可能要素・イベント属性・外部参照を持ち込まない。
+  for (const element of Array.from(
+    svg.querySelectorAll('script, foreignObject, iframe, object, embed'),
+  )) {
+    element.remove();
+  }
+  for (const element of Array.from(svg.querySelectorAll('*'))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const value = attribute.value.trim();
+      if (/^on/i.test(attribute.name)) {
+        element.removeAttribute(attribute.name);
+      } else if (
+        /^(?:href|xlink:href|src)$/i.test(attribute.name) &&
+        value !== '' &&
+        !value.startsWith('#') &&
+        !value.startsWith('data:image/')
+      ) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+
+  const aspect = svgAspectRatio(svg);
+  if (!aspect || !Number.isFinite(aspect)) throw new Error('SVG has no size');
+  // DPIは絵柄そのものの実寸に対する画素密度。フィギュア全高にはカットライン余白・
+  // 持ち上げ量・板厚も含まれるため、既存のスケール計算と同じ定義でそれらを差し引く。
+  const artworkHeightMm = scaleParameters.figureHeightMm - computeOutsideArtworkMm(scaleParameters);
+  if (!(artworkHeightMm > 0)) throw new Error('Figure height is too small');
+  const height = Math.max(1, Math.round((artworkHeightMm * RECOMMENDED_DPI) / MM_PER_INCH));
+  const width = Math.max(1, Math.round(height * aspect));
+
+  // 明示寸法を与えることで、viewBox だけのSVGもブラウザ差なく同じ解像度で描画できる。
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  const blob = new Blob([new XMLSerializer().serializeToString(documentNode)], {
+    type: 'image/svg+xml',
+  });
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas is unavailable');
+    context.drawImage(image, 0, 0, width, height);
+    return await createImageBitmap(canvas);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * PNG / SVG ファイルを読み込み、描画用 ImageBitmap を持つ FigureImage を返す。
  *
  * 手順：PNG 判定 → createImageBitmap でデコード → Canvas へ描画して
  * getImageData で RGBA ピクセルを取得 → 全透明チェック。
@@ -64,15 +165,20 @@ function looksLikePng(file: File): boolean {
  * フリーズするため（model/types の FigureImage 注記参照）。解析側（useAnalysis）が
  * 画像 id で一度だけ取り出して Worker へ転送する。
  */
-export async function loadPngFile(file: File): Promise<ImageLoadResult> {
-  if (!looksLikePng(file)) {
+export async function loadImageFile(
+  file: File,
+  scaleParameters: ScaleParameters,
+): Promise<ImageLoadResult> {
+  if (!looksLikeSupportedImage(file)) {
     return fail('unsupportedImage');
   }
 
-  // createImageBitmap はネットワークを介さずローカルにデコードする（外部送信なし）。
+  // SVG は互換デコード経路、PNG は createImageBitmap でローカルにデコードする。
   let bitmap: ImageBitmap;
   try {
-    bitmap = await createImageBitmap(file);
+    bitmap = looksLikeSvg(file)
+      ? await decodeSvg(file, scaleParameters)
+      : await createImageBitmap(file);
   } catch {
     return fail('imageLoadFailed');
   }
