@@ -20,22 +20,13 @@ type ImageLoadErrorKind = Extract<
   'imageLoadFailed' | 'unsupportedImage' | 'transparentImage'
 >;
 
-/** UI へ提示するエラーメッセージ（日本語）。 */
-const ERROR_MESSAGES: Record<ImageLoadErrorKind, string> = {
-  imageLoadFailed:
-    '画像の読み込みに失敗しました。PNG / SVGファイルが破損していないか、SVGに表示サイズまたはviewBoxがあるか確認してください。',
-  unsupportedImage: '対応していない画像形式です。PNGまたはSVG画像を選択してください。',
-  transparentImage:
-    '不透明なピクセルが見つかりません。透明部分以外（α>0）を含むPNGまたはSVG画像を選択してください。',
-};
-
 /** 画像読み込みの結果。成功なら FigureImage、失敗なら型付きエラー。 */
 export type ImageLoadResult =
   { ok: true; image: FigureImage } | { ok: false; error: AnalysisError };
 
 /** エラー結果を組み立てる小ヘルパー。 */
 function fail(kind: ImageLoadErrorKind): ImageLoadResult {
-  return { ok: false, error: { kind, message: ERROR_MESSAGES[kind] } };
+  return { ok: false, error: { kind } };
 }
 
 /**

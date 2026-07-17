@@ -5,7 +5,7 @@
 // 直下に置く。状態は保持せず、生成・ダウンロードは上位（App）に委ねる presentational
 // コンポーネント。
 
-import { Download } from 'lucide-react';
+import { Box, Download, Image } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import { ImpositionPreview } from '@/components/ImpositionPreview';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { AnalysisResult } from '@/model/types';
+import { useTranslation } from '@/locales';
 
 export interface ExportSettings {
   partGapMm: number;
@@ -37,6 +38,10 @@ export interface ExportPanelProps {
   onExportCutlineAi?: () => void;
   /** 絵柄画像だけの PDF エクスポートを要求する。 */
   onExportImagePdf?: () => void;
+  /** 2D 広告用モックアップ PNG をエクスポートする。結果が無い場合は未指定で無効化される。 */
+  onExportMockup2d?: () => void;
+  /** 3D 広告用モックアップ PNG をエクスポートする。結果が無い場合は未指定で無効化される。 */
+  onExportMockup3d?: () => void;
   /** SVG に絵柄画像を埋め込むか（.ai は常に埋め込むため対象外）。 */
   embedImageInSvg: boolean;
   onEmbedImageInSvgChange: (value: boolean) => void;
@@ -56,6 +61,8 @@ export function ExportPanel({
   onExportAi,
   onExportCutlineAi,
   onExportImagePdf,
+  onExportMockup2d,
+  onExportMockup3d,
   embedImageInSvg,
   onEmbedImageInSvgChange,
   settings,
@@ -67,11 +74,12 @@ export function ExportPanel({
   const updateSettings = (patch: Partial<ExportSettings>) => {
     onSettingsChange({ ...settings, ...patch });
   };
+  const { t } = useTranslation();
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>エクスポート</CardTitle>
+        <CardTitle>{t('exportPanel.title')}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="grid gap-1.5">
@@ -282,7 +290,7 @@ export function ExportPanel({
           onClick={onExportSvg}
         >
           <Download />
-          SVGファイル (.svg)
+          {t('exportPanel.exportSvg')}
         </Button>
 
         {/* SVG は線データのみが既定。絵柄が要る場合だけ画像を埋め込む（ファイルは重くなる）。 */}
@@ -294,7 +302,7 @@ export function ExportPanel({
             disabled={exporting}
           />
           <Label htmlFor="embed-image-in-svg" className="text-muted-foreground text-sm font-normal">
-            SVGに絵柄画像を含める
+            {t('exportPanel.embedImage')}
           </Label>
         </div>
 
@@ -307,7 +315,29 @@ export function ExportPanel({
           onClick={onExportAi}
         >
           <Download />
-          Illustrator ドキュメント (.ai)
+          {t('exportPanel.exportAi')}
+        </Button>
+
+        {/* 広告用モックアップ PNG（2D / 3D）。背景透過でそのまま合成できる。 */}
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={!onExportMockup2d || exporting}
+          onClick={onExportMockup2d}
+        >
+          <Image />
+          {t('exportPanel.exportMockup2d')}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={!onExportMockup3d || exporting}
+          onClick={onExportMockup3d}
+        >
+          <Box />
+          {t('exportPanel.exportMockup3d')}
         </Button>
 
         <Button

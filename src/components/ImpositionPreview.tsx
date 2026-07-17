@@ -183,12 +183,12 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                     {!settings.redCutLinesOnly && (
                       <>
                         <path
-                          d={rectPathForPlacement(geometry.neck, bounds, placement)}
+                          d={rectPathForPlacement(geometry.neck!, bounds, placement)}
                           stroke={colors.slot}
                           strokeWidth={strokeWidth}
                         />
                         <path
-                          d={rectPathForPlacement(geometry.tab, bounds, placement)}
+                          d={rectPathForPlacement(geometry.tab!, bounds, placement)}
                           stroke={colors.slot}
                           strokeWidth={strokeWidth}
                         />
@@ -199,7 +199,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
               })}
               {geometry.separatePartsLayout.basePlacements.map((placement, index) => {
                 const bounds = geometry.separatePartsLayout!.baseBounds;
-                const baseCurve = mapCurve(geometry.base.curve, (p) =>
+                const baseCurve = mapCurve(geometry.base!.curve, (p) =>
                   placePartPoint(p, bounds, placement),
                 );
                 return (
@@ -210,7 +210,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                       strokeWidth={strokeWidth}
                     />
                     <path
-                      d={rectPathForPlacement(geometry.baseSlot, bounds, placement)}
+                      d={rectPathForPlacement(geometry.baseSlot!, bounds, placement)}
                       stroke={colors.baseSlot}
                       strokeWidth={strokeWidth}
                     />
@@ -223,7 +223,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
             geometry.tileOffsets.map((offset, index) => {
               const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
               const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
-              const baseCurve = mapCurve(geometry.base.curve, (p) =>
+              const baseCurve = mapCurve(geometry.base!.curve, (p) =>
                 tilePoint(geometry, offset, p),
               );
 
@@ -248,12 +248,12 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                   {!settings.redCutLinesOnly && (
                     <>
                       <path
-                        d={rectPathForTile(geometry, offset, geometry.neck)}
+                        d={rectPathForTile(geometry, offset, geometry.neck!)}
                         stroke={colors.slot}
                         strokeWidth={strokeWidth}
                       />
                       <path
-                        d={rectPathForTile(geometry, offset, geometry.tab)}
+                        d={rectPathForTile(geometry, offset, geometry.tab!)}
                         stroke={colors.slot}
                         strokeWidth={strokeWidth}
                       />
@@ -265,7 +265,7 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                     strokeWidth={strokeWidth}
                   />
                   <path
-                    d={rectPathForTile(geometry, offset, geometry.baseSlot)}
+                    d={rectPathForTile(geometry, offset, geometry.baseSlot!)}
                     stroke={colors.baseSlot}
                     strokeWidth={strokeWidth}
                   />

@@ -153,22 +153,22 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
       ? []
       : [
           pathElement(
-            rectPathForTile(geometry, offset, geometry.neck),
+            rectPathForTile(geometry, offset, geometry.neck!),
             `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
           ),
           pathElement(
-            rectPathForTile(geometry, offset, geometry.tab),
+            rectPathForTile(geometry, offset, geometry.tab!),
             `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
           ),
         ];
     // 台座は「台座形状」で選んだ footprint の上面図。矩形以外も曲線コマンドで出力する。
-    const baseCurve = mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p));
+    const baseCurve = mapCurve(geometry.base!.curve, (p) => tilePoint(geometry, offset, p));
     const baseEl = pathElement(
       curvePathData(baseCurve, fmt),
       `fill="none" stroke="${colors.base}" ${strokeAttr}`,
     );
     const baseSlotEl = pathElement(
-      rectPathForTile(geometry, offset, geometry.baseSlot),
+      rectPathForTile(geometry, offset, geometry.baseSlot!),
       `fill="none" stroke="${colors.baseSlot}" ${strokeAttr}`,
     );
     const frameEl =

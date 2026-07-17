@@ -115,17 +115,18 @@ export interface ExportGeometry {
    * contour と同じ mm 換算を通しているため、頂点列に現れる座標と厳密に一致する。
    */
   sharpCorners: readonly Point[];
-  /** 差込部の首部（mm）。 */
-  neck: RectMm;
-  /** 差込部のツメ（mm）。台座上面から板厚ぶん下へ伸びる。 */
-  tab: RectMm;
-  /** 台座（台座上面へ bbox 上辺を合わせて置く実寸の footprint、mm）。 */
-  base: BaseFootprintMm;
+  /** 差込部の首部（mm）。baseFigure のみ。 */
+  neck?: RectMm;
+  /** 差込部のツメ（mm）。baseFigure のみ。 */
+  tab?: RectMm;
+  /** 台座（台座上面へ bbox 上辺を合わせて置く実寸の footprint、mm）。baseFigure のみ。 */
+  base?: BaseFootprintMm;
   /**
-   * 台座に切るスリット（差込口）の footprint（mm）。base の内側にある切り抜き線であり、
-   * これを台座と同じ図に出すことで、台座パーツだけを見て加工できる（SPEC「エクスポート」）。
+   * 台座に切るスリット（差込口）の footprint（mm）。baseFigure のみ。
    */
-  baseSlot: RectMm;
+  baseSlot?: RectMm;
+  /** キーホルダー穴（mm）。keychain のみ。 */
+  hole?: { center: Point; radius: number };
   /** 絵柄画像を実寸で置く矩形（mm）。画像は解析と同じ左上原点なので常に原点始まり。 */
   image: RectMm;
   /** 任意で追加する枠線（mm）。 */
@@ -194,15 +195,48 @@ export function buildExportGeometry(
   result: AnalysisResult,
   options: ExportGeometryOptions,
 ): ExportGeometry {
-  const { mmPerPixel, imageSize, contour, slot, base } = result;
-
-  // 台座上面の実寸 Y。首部の下端・ツメの上端・台座の上辺が共有する基準線。
-  const baseTopYMm = base.topYMm;
+  const { mmPerPixel, imageSize, contour } = result;
 
   const toMm = (p: Point): Point => ({ x: p.x * mmPerPixel, y: p.y * mmPerPixel });
   const contourMm = contour.map(toMm);
 
-  // 首部：幅は mm を直接使い、上端はカットライン下辺との接続位置（ピクセル）から換算する。
+  // 絵柄画像：解析と同じ画素座標系にそのまま乗るので、原点から実寸サイズぶん。
+  const imageRect: RectMm = {
+    x: 0,
+    y: 0,
+    width: imageSize.width * mmPerPixel,
+    height: imageSize.height * mmPerPixel,
+  };
+
+  // keychain モード：回転済み contour + 穴のみ。
+  if (result.keychain) {
+    const { keychain } = result;
+    const hole = {
+      center: toMm(keychain.holeCenterPixel),
+      radius: keychain.holeRadiusMm,
+    };
+    const bounds = [holeRect(hole), ...(options.includeImage ? [imageRect] : [])];
+    const viewBox = computeViewBox(contourMm, bounds);
+    return {
+      contour: contourMm,
+      sharpCorners: [],
+      hole,
+      image: imageRect,
+      tileBounds: viewBox,
+      tileRotationDeg: 0,
+      tileOffsets: [{ x: 0, y: 0 }],
+      viewBox,
+    };
+  }
+
+  // baseFigure モード：既存の首・ツメ・台座・スリットを含める。
+  const { slot, base } = result;
+  if (!slot || !base) {
+    throw new Error('buildExportGeometry requires slot/base for baseFigure mode');
+  }
+
+  const baseTopYMm = base.topYMm;
+
   const neckTopYMm = slot.neck.yPixel * mmPerPixel;
   const neckRect: RectMm = {
     x: slot.centerXMm - slot.neckWidthMm / 2,
@@ -211,7 +245,6 @@ export function buildExportGeometry(
     height: Math.max(0, baseTopYMm - neckTopYMm),
   };
 
-  // ツメ：台座上面から板厚（＝ツメ深さ）ぶん下へ。首部より狭く、差分が肩になる。
   const tabRect: RectMm = {
     x: slot.centerXMm - slot.widthMm / 2,
     y: baseTopYMm,
@@ -219,9 +252,6 @@ export function buildExportGeometry(
     height: slot.tabDepthMm,
   };
 
-  // 台座：footprint（台座ローカル座標）を書き出し座標へ平行移動する。footprint の原点は
-  // bbox 中心・奥行原点なので、X は差込部中心へ、Y は「台座上面 + 奥行/2」へ移せばよい
-  // （bbox の上辺がちょうど台座上面に載り、+Y（下）が前になる）。回転・スケールは無い。
   const baseOriginYMm = baseTopYMm + base.depthMm / 2;
   const toBaseMm = (p: Point): Point => ({
     x: slot.centerXMm + p.x,
@@ -238,23 +268,12 @@ export function buildExportGeometry(
     },
   };
 
-  // 台座に切るスリット：上面図なので幅 = 差込口幅（ツメ幅）、奥行方向の開口 = 板厚。
-  // 中心は「台座の奥行原点 + 前後オフセット」（下方向が前）。base.ts がスリットの内包を
-  // 検査済みなので、この矩形は必ず台座 footprint の内側に収まる。
   const slitCenterYMm = baseOriginYMm + slot.depthOffsetMm;
   let baseSlotRect: RectMm = {
     x: slot.centerXMm - slot.widthMm / 2,
     y: slitCenterYMm - slot.tabDepthMm / 2,
     width: slot.widthMm,
     height: slot.tabDepthMm,
-  };
-
-  // 絵柄画像：解析と同じ画素座標系にそのまま乗るので、原点から実寸サイズぶん。
-  const imageRect: RectMm = {
-    x: 0,
-    y: 0,
-    width: imageSize.width * mmPerPixel,
-    height: imageSize.height * mmPerPixel,
   };
 
   const partGapMm = Math.max(0, options.partGapMm ?? 0);
@@ -304,15 +323,15 @@ export function buildExportGeometry(
   const impositionGapMm = Math.max(0, options.impositionGapMm ?? 5);
   if (options.imposeA4 === true && options.separatePartsImposition === true) {
     const figureBounds = boundsFromGeometry(geometry.contour, [
-      geometry.neck,
-      geometry.tab,
+      geometry.neck!,
+      geometry.tab!,
       ...(options.includeImage ? [geometry.image] : []),
     ]);
-    const baseBounds = boundsFromGeometry(geometry.base.outline, [geometry.baseSlot]);
+    const baseBounds = boundsFromGeometry(geometry.base!.outline, [geometry.baseSlot!]);
     separatePartsLayout = computeSeparatePartsLayout(
       figureBounds,
       baseBounds,
-      geometry.base.outline,
+      geometry.base!.outline,
       pageSize,
       impositionGapMm,
     );
@@ -477,10 +496,10 @@ function computeSeparatePartsLayout(
 
 function exportBoundsRects(geometry: ExportGeometryBody): RectMm[] {
   return [
-    geometry.neck,
-    geometry.tab,
-    geometry.base.bounds,
-    geometry.baseSlot,
+    geometry.neck!,
+    geometry.tab!,
+    geometry.base!.bounds,
+    geometry.baseSlot!,
     ...(geometry.frame ? [geometry.frame] : []),
   ];
 }
@@ -516,10 +535,10 @@ function translateExportGeometry(
   return {
     contour: geometry.contour.map((p) => translatePoint(p, dx, dy)),
     sharpCorners: geometry.sharpCorners.map((p) => translatePoint(p, dx, dy)),
-    neck: translateRect(geometry.neck, dx, dy),
-    tab: translateRect(geometry.tab, dx, dy),
-    base: translateBaseFootprint(geometry.base, dx, dy),
-    baseSlot: translateRect(geometry.baseSlot, dx, dy),
+    neck: translateRect(geometry.neck!, dx, dy),
+    tab: translateRect(geometry.tab!, dx, dy),
+    base: translateBaseFootprint(geometry.base!, dx, dy),
+    baseSlot: translateRect(geometry.baseSlot!, dx, dy),
     image: translateRect(geometry.image, dx, dy),
     ...(geometry.frame ? { frame: translateRect(geometry.frame, dx, dy) } : {}),
   };
@@ -545,10 +564,10 @@ function mirrorExportGeometryX(geometry: ExportGeometryBody, bounds: RectMm): Ex
   return {
     contour: geometry.contour.map((p) => mirrorPointX(p, bounds)),
     sharpCorners: geometry.sharpCorners.map((p) => mirrorPointX(p, bounds)),
-    neck: mirrorRectX(geometry.neck, bounds),
-    tab: mirrorRectX(geometry.tab, bounds),
-    base: mirrorBaseFootprintX(geometry.base, bounds),
-    baseSlot: mirrorRectX(geometry.baseSlot, bounds),
+    neck: mirrorRectX(geometry.neck!, bounds),
+    tab: mirrorRectX(geometry.tab!, bounds),
+    base: mirrorBaseFootprintX(geometry.base!, bounds),
+    baseSlot: mirrorRectX(geometry.baseSlot!, bounds),
     image: mirrorRectX(geometry.image, bounds),
     ...(geometry.frame ? { frame: mirrorRectX(geometry.frame, bounds) } : {}),
   };
@@ -616,6 +635,16 @@ function boundsFromGeometry(points: readonly Point[], rects: readonly RectMm[]):
   const maxY = Math.max(...ys);
 
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/** 穴の外接矩形。viewBox 計算用。 */
+function holeRect(hole: { center: Point; radius: number }): RectMm {
+  return {
+    x: hole.center.x - hole.radius,
+    y: hole.center.y - hole.radius,
+    width: hole.radius * 2,
+    height: hole.radius * 2,
+  };
 }
 
 /** 頂点列と矩形群を包む境界（mm）に余白を足した領域を求める。 */

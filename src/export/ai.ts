@@ -388,28 +388,28 @@ async function generatePdfBytes(
         };
         for (const placement of separate.figurePlacements) {
           if (!redCutLinesOnly) {
-            strokePath(pathFor(geometry.neck, placement, separate.figureBounds), colors.slot);
-            strokePath(pathFor(geometry.tab, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.neck!, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.tab!, placement, separate.figureBounds), colors.slot);
           }
         }
         for (const placement of separate.basePlacements) {
-          const basePath = mapCurve(geometry.base.curve, (p) =>
+          const basePath = mapCurve(geometry.base!.curve, (p) =>
             toPt(placePartPoint(p, separate.baseBounds, placement), viewBox),
           );
           strokePath(curvePathData(basePath, fmtPt), colors.base);
-          strokePath(pathFor(geometry.baseSlot, placement, separate.baseBounds), colors.baseSlot);
+          strokePath(pathFor(geometry.baseSlot!, placement, separate.baseBounds), colors.baseSlot);
         }
         return;
       }
       for (const offset of geometry.tileOffsets) {
         // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
-        const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
+        const basePath = mapCurve(geometry.base!.curve, (p) => toPt(tilePoint(offset, p), viewBox));
         strokePath(curvePathData(basePath, fmtPt), colors.base);
         if (!redCutLinesOnly) {
-          strokePath(rectPathForTile(offset, geometry.neck), colors.slot);
-          strokePath(rectPathForTile(offset, geometry.tab), colors.slot);
+          strokePath(rectPathForTile(offset, geometry.neck!), colors.slot);
+          strokePath(rectPathForTile(offset, geometry.tab!), colors.slot);
         }
-        strokePath(rectPathForTile(offset, geometry.baseSlot), colors.baseSlot);
+        strokePath(rectPathForTile(offset, geometry.baseSlot!), colors.baseSlot);
         if (geometry.frame !== undefined) {
           strokePath(rectPathForTile(offset, geometry.frame), colors.frame);
         }
