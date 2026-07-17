@@ -120,12 +120,23 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
           aria-label={settings.imposeA4 ? '面付けプレビュー' : '書き出しプレビュー'}
         >
           <rect
-            x={0}
-            y={0}
+            x={geometry.viewBox.x}
+            y={geometry.viewBox.y}
             width={geometry.viewBox.width}
             height={geometry.viewBox.height}
             fill="white"
           />
+          {settings.imposeA4 && (
+            <rect
+              x={geometry.viewBox.x + strokeWidth / 2}
+              y={geometry.viewBox.y + strokeWidth / 2}
+              width={Math.max(0, geometry.viewBox.width - strokeWidth)}
+              height={Math.max(0, geometry.viewBox.height - strokeWidth)}
+              fill="none"
+              stroke="#64748b"
+              strokeWidth={strokeWidth}
+            />
+          )}
           {geometry.tileOffsets.map((offset, index) => {
             const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
             const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));

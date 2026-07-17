@@ -315,6 +315,19 @@ async function generatePdfBytes(
   // 差込口・台座。差込部の首部・ツメは位置確認と加工形状のため独立線としても出す。
   if (mode.includeCutLines) {
     inLayer('base', () => {
+      // 面付け時は用紙サイズそのものを編集可能な矩形パスとして1つ出力する。
+      // タイルごとの任意枠（geometry.frame）とは別で、複製・回転を適用しない。
+      if (options.imposeA4 === true) {
+        const [r, g, b] = hexToRgbComponents(colors.frame);
+        page.drawRectangle({
+          x: 0,
+          y: 0,
+          width: pageWidth,
+          height: pageHeight,
+          borderColor: rgb(r, g, b),
+          borderWidth,
+        });
+      }
       for (const offset of geometry.tileOffsets) {
         // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
         const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
