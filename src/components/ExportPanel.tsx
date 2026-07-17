@@ -20,7 +20,10 @@ export interface ExportSettings {
   includeFrame: boolean;
   framePaddingMm: number;
   imposeA4: boolean;
+  impositionPageWidthMm: number;
+  impositionPageHeightMm: number;
   redCutLinesOnly: boolean;
+  mirrorArtwork: boolean;
 }
 
 export interface ExportPanelProps {
@@ -28,6 +31,10 @@ export interface ExportPanelProps {
   onExportSvg?: () => void;
   /** Illustrator（.ai）エクスポートを要求する。結果が無い場合は未指定で無効化される。 */
   onExportAi?: () => void;
+  /** カットラインだけの Illustrator（.ai）エクスポートを要求する。 */
+  onExportCutlineAi?: () => void;
+  /** 絵柄画像だけの PDF エクスポートを要求する。 */
+  onExportImagePdf?: () => void;
   /** SVG に絵柄画像を埋め込むか（.ai は常に埋め込むため対象外）。 */
   embedImageInSvg: boolean;
   onEmbedImageInSvgChange: (value: boolean) => void;
@@ -45,6 +52,8 @@ export interface ExportPanelProps {
 export function ExportPanel({
   onExportSvg,
   onExportAi,
+  onExportCutlineAi,
+  onExportImagePdf,
   embedImageInSvg,
   onEmbedImageInSvgChange,
   settings,
@@ -133,13 +142,59 @@ export function ExportPanel({
             onCheckedChange={(checked) => updateSettings({ imposeA4: checked === true })}
             disabled={exporting}
           />
-          <Label
-            htmlFor="export-impose-a4"
-            className="text-muted-foreground text-sm font-normal"
-          >
-            A4サイズに面付けする
+          <Label htmlFor="export-impose-a4" className="text-muted-foreground text-sm font-normal">
+            面付けする
           </Label>
         </div>
+
+        {settings.imposeA4 && (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="export-imposition-page-width">面付け幅</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="export-imposition-page-width"
+                  type="number"
+                  inputMode="decimal"
+                  min={1}
+                  max={2000}
+                  step={1}
+                  value={settings.impositionPageWidthMm}
+                  onChange={(event) => {
+                    const next = event.target.valueAsNumber;
+                    if (!Number.isNaN(next)) {
+                      updateSettings({ impositionPageWidthMm: Math.max(1, next) });
+                    }
+                  }}
+                  disabled={exporting}
+                />
+                <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="export-imposition-page-height">面付け高さ</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="export-imposition-page-height"
+                  type="number"
+                  inputMode="decimal"
+                  min={1}
+                  max={2000}
+                  step={1}
+                  value={settings.impositionPageHeightMm}
+                  onChange={(event) => {
+                    const next = event.target.valueAsNumber;
+                    if (!Number.isNaN(next)) {
+                      updateSettings({ impositionPageHeightMm: Math.max(1, next) });
+                    }
+                  }}
+                  disabled={exporting}
+                />
+                <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {settings.imposeA4 && (
           <ImpositionPreview
@@ -161,6 +216,21 @@ export function ExportPanel({
             className="text-muted-foreground text-sm font-normal"
           >
             カットラインのみ赤で出力する
+          </Label>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="export-mirror-artwork"
+            checked={settings.mirrorArtwork}
+            onCheckedChange={(checked) => updateSettings({ mirrorArtwork: checked === true })}
+            disabled={exporting}
+          />
+          <Label
+            htmlFor="export-mirror-artwork"
+            className="text-muted-foreground text-sm font-normal"
+          >
+            絵柄を左右反転する
           </Label>
         </div>
 
@@ -198,6 +268,28 @@ export function ExportPanel({
         >
           <Download />
           Illustrator ドキュメント (.ai)
+        </Button>
+
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={!onExportCutlineAi || exporting}
+          onClick={onExportCutlineAi}
+        >
+          <Download />
+          カットライン AI (.ai)
+        </Button>
+
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={!onExportImagePdf || exporting}
+          onClick={onExportImagePdf}
+        >
+          <Download />
+          絵柄画像 PDF (.pdf)
         </Button>
       </CardContent>
     </Card>

@@ -9,7 +9,7 @@
 // これにより各生成器は「すでに PNG になったもの」を受け取るだけで済む。
 
 /** ImageBitmap を原寸の 2D canvas へ描き直す。α はそのまま保たれる。 */
-function drawToCanvas(bitmap: ImageBitmap): HTMLCanvasElement {
+function drawToCanvas(bitmap: ImageBitmap, mirrorX = false): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
@@ -17,6 +17,10 @@ function drawToCanvas(bitmap: ImageBitmap): HTMLCanvasElement {
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     throw new Error('canvas の 2D コンテキストを取得できませんでした。');
+  }
+  if (mirrorX) {
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
   }
   ctx.drawImage(bitmap, 0, 0);
 
@@ -37,13 +41,13 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 /** 絵柄を PNG（α 保持）のバイト列にする。.ai（PDF）への埋め込み用。 */
-export async function bitmapToPngBytes(bitmap: ImageBitmap): Promise<Uint8Array> {
-  const blob = await canvasToPngBlob(drawToCanvas(bitmap));
+export async function bitmapToPngBytes(bitmap: ImageBitmap, mirrorX = false): Promise<Uint8Array> {
+  const blob = await canvasToPngBlob(drawToCanvas(bitmap, mirrorX));
   return new Uint8Array(await blob.arrayBuffer());
 }
 
 /** 絵柄を PNG の data URL にする。SVG の <image href> 用。 */
-export function bitmapToPngDataUrl(bitmap: ImageBitmap): string {
+export function bitmapToPngDataUrl(bitmap: ImageBitmap, mirrorX = false): string {
   // SVG は文字列なので data URL が要る。canvas から直接 base64 化できる toDataURL を使う。
-  return drawToCanvas(bitmap).toDataURL('image/png');
+  return drawToCanvas(bitmap, mirrorX).toDataURL('image/png');
 }

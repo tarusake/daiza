@@ -37,17 +37,15 @@ export const RED_CUTLINE_COLORS = {
   contour: '#ff0000',
   baseSlot: '#ff0000',
   base: '#ff0000',
-  frame: '#ff0000',
+  frame: '#000000',
 } as const satisfies Record<keyof typeof EXPORT_COLORS, string>;
 
-export function exportColors(
-  redCutLinesOnly: boolean,
-): Record<keyof typeof EXPORT_COLORS, string> {
+export function exportColors(redCutLinesOnly: boolean): Record<keyof typeof EXPORT_COLORS, string> {
   return redCutLinesOnly ? RED_CUTLINE_COLORS : EXPORT_COLORS;
 }
 
-/** A4 縦置きの実寸(mm)。 */
-export const A4_PAGE_MM = { width: 210, height: 297 } as const;
+/** 面付け用紙サイズの既定値。A4 縦置きの実寸(mm)。 */
+export const DEFAULT_IMPOSITION_PAGE_MM = { width: 210, height: 297 } as const;
 
 /**
  * mm 値をファイル出力向けの短い文字列へ整える。
@@ -110,9 +108,9 @@ export interface ExportGeometry {
   image: RectMm;
   /** 任意で追加する枠線（mm）。 */
   frame?: RectMm;
-  /** 1 タイル分の外接。A4 面付けではこの寸法を基準に行列数を決める。 */
+  /** 1 タイル分の外接。面付けではこの寸法を基準に行列数を決める。 */
   tileBounds: RectMm;
-  /** A4 面付け時に採用したタイル回転。数が多く入る 0度 / 90度を自動選択する。 */
+  /** 面付け時に採用したタイル回転。数が多く入る 0度 / 90度を自動選択する。 */
   tileRotationDeg: 0 | 90;
   /** 面付け時の複製オフセット。通常出力では [{ x: 0, y: 0 }] の 1 要素。 */
   tileOffsets: readonly Point[];
@@ -139,8 +137,14 @@ export interface ExportGeometryOptions {
   includeFrame?: boolean;
   /** 枠を付ける場合の図形から枠までの余白(mm)。 */
   framePaddingMm?: number;
-  /** A4 縦置きページへ原寸で配置するか。 */
+  /** 面付けページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** 面付けページ幅(mm)。未指定なら A4 幅。 */
+  impositionPageWidthMm?: number;
+  /** 面付けページ高さ(mm)。未指定なら A4 高さ。 */
+  impositionPageHeightMm?: number;
+  /** 書き出し幾何全体を左右反転するか。 */
+  mirrorX?: boolean;
 }
 
 /**
@@ -256,37 +260,32 @@ export function buildExportGeometry(
     ...(frame ? { frame } : {}),
   };
 
-  let layoutBounds = boundsFromGeometry(geometry.contour, [
-    geometry.neck,
-    geometry.tab,
-    geometry.base.bounds,
-    geometry.baseSlot,
-    ...(geometry.frame ? [geometry.frame] : []),
-  ]);
+  const outputRects = exportBoundsRects(geometry);
+  const mirrorBounds = boundsFromGeometry(geometry.contour, outputRects);
+  if (options.mirrorX === true) {
+    geometry = mirrorExportGeometryX(geometry, mirrorBounds);
+  }
+
+  let layoutBounds = boundsFromGeometry(geometry.contour, exportBoundsRects(geometry));
 
   let tileBounds = layoutBounds;
   let tileRotationDeg: 0 | 90 = 0;
   let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+  const pageSize = normalizedPageSize(options);
   if (options.imposeA4 === true) {
     const a4MarginMm = 0;
     const dx = a4MarginMm - layoutBounds.x;
     const dy = a4MarginMm - layoutBounds.y;
     geometry = translateExportGeometry(geometry, dx, dy);
     layoutBounds = translateRect(layoutBounds, dx, dy);
-    const normal = computeA4TileLayout(layoutBounds.width, layoutBounds.height);
-    const rotated = computeA4TileLayout(layoutBounds.height, layoutBounds.width);
+    const normal = computeImpositionTileLayout(layoutBounds.width, layoutBounds.height, pageSize);
+    const rotated = computeImpositionTileLayout(layoutBounds.height, layoutBounds.width, pageSize);
     tileRotationDeg = rotated.count > normal.count ? 90 : 0;
     tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
     tileBounds = layoutBounds;
   }
 
-  const bounds = [
-    geometry.neck,
-    geometry.tab,
-    geometry.base.bounds,
-    geometry.baseSlot,
-    ...(geometry.frame ? [geometry.frame] : []),
-  ];
+  const bounds = exportBoundsRects(geometry);
 
   return {
     ...geometry,
@@ -295,8 +294,25 @@ export function buildExportGeometry(
     tileOffsets,
     viewBox:
       options.imposeA4 === true
-        ? { x: 0, y: 0, width: A4_PAGE_MM.width, height: A4_PAGE_MM.height }
+        ? { x: 0, y: 0, width: pageSize.width, height: pageSize.height }
         : computeViewBox(geometry.contour, bounds),
+  };
+}
+
+function exportBoundsRects(geometry: ExportGeometryBody): RectMm[] {
+  return [
+    geometry.neck,
+    geometry.tab,
+    geometry.base.bounds,
+    geometry.baseSlot,
+    ...(geometry.frame ? [geometry.frame] : []),
+  ];
+}
+
+function normalizedPageSize(options: ExportGeometryOptions): { width: number; height: number } {
+  return {
+    width: Math.max(1, options.impositionPageWidthMm ?? DEFAULT_IMPOSITION_PAGE_MM.width),
+    height: Math.max(1, options.impositionPageHeightMm ?? DEFAULT_IMPOSITION_PAGE_MM.height),
   };
 }
 
@@ -333,9 +349,39 @@ function translateExportGeometry(
   };
 }
 
-function computeA4TileLayout(
+function mirrorPointX(point: Point, bounds: RectMm): Point {
+  return { x: bounds.x + bounds.width - (point.x - bounds.x), y: point.y };
+}
+
+function mirrorRectX(rect: RectMm, bounds: RectMm): RectMm {
+  return { ...rect, x: bounds.x + bounds.width - (rect.x - bounds.x) - rect.width };
+}
+
+function mirrorBaseFootprintX(base: BaseFootprintMm, bounds: RectMm): BaseFootprintMm {
+  return {
+    curve: mapCurve(base.curve, (p) => mirrorPointX(p, bounds)),
+    outline: base.outline.map((p) => mirrorPointX(p, bounds)),
+    bounds: mirrorRectX(base.bounds, bounds),
+  };
+}
+
+function mirrorExportGeometryX(geometry: ExportGeometryBody, bounds: RectMm): ExportGeometryBody {
+  return {
+    contour: geometry.contour.map((p) => mirrorPointX(p, bounds)),
+    sharpCorners: geometry.sharpCorners.map((p) => mirrorPointX(p, bounds)),
+    neck: mirrorRectX(geometry.neck, bounds),
+    tab: mirrorRectX(geometry.tab, bounds),
+    base: mirrorBaseFootprintX(geometry.base, bounds),
+    baseSlot: mirrorRectX(geometry.baseSlot, bounds),
+    image: mirrorRectX(geometry.image, bounds),
+    ...(geometry.frame ? { frame: mirrorRectX(geometry.frame, bounds) } : {}),
+  };
+}
+
+function computeImpositionTileLayout(
   tileWidthMm: number,
   tileHeightMm: number,
+  pageSize: { width: number; height: number },
 ): { count: number; offsets: Point[] } {
   if (tileWidthMm <= 0 || tileHeightMm <= 0) {
     return { count: 1, offsets: [{ x: 0, y: 0 }] };
@@ -343,8 +389,8 @@ function computeA4TileLayout(
 
   const pageMarginMm = 0;
   const gutterMm = 0;
-  const usableWidth = A4_PAGE_MM.width - pageMarginMm * 2;
-  const usableHeight = A4_PAGE_MM.height - pageMarginMm * 2;
+  const usableWidth = pageSize.width - pageMarginMm * 2;
+  const usableHeight = pageSize.height - pageMarginMm * 2;
   const columns = Math.max(1, Math.floor((usableWidth + gutterMm) / (tileWidthMm + gutterMm)));
   const rows = Math.max(1, Math.floor((usableHeight + gutterMm) / (tileHeightMm + gutterMm)));
   const occupiedWidth = columns * tileWidthMm + (columns - 1) * gutterMm;

@@ -13,7 +13,8 @@ import { LeftPanel } from '@/components/LeftPanel';
 import { PaneResizer } from '@/components/PaneResizer';
 import { Preview } from '@/components/Preview';
 import { ResultPanel } from '@/components/ResultPanel';
-import { generateAi } from '@/export/ai';
+import { generateAi, generateCutlineAi, generateImagePdf } from '@/export/ai';
+import { DEFAULT_IMPOSITION_PAGE_MM } from '@/export/geometry';
 import { bitmapToPngBytes, bitmapToPngDataUrl } from '@/export/raster';
 import { generateSvg } from '@/export/svg';
 import { useAnalysis } from '@/hooks/useAnalysis';
@@ -35,9 +36,9 @@ function downloadBlob(blob: Blob, fileName: string): void {
 }
 
 /** 画像ファイル名（例 figure.png）から、指定拡張子のダウンロード名を導く。 */
-function exportFileName(imageFileName: string, extension: string): string {
+function exportFileName(imageFileName: string, extension: string, suffix = ''): string {
   const base = imageFileName.replace(/\.[^./\\]+$/, '');
-  return `${base || 'daiza'}.${extension}`;
+  return `${base || 'daiza'}${suffix}.${extension}`;
 }
 
 /**
@@ -52,7 +53,10 @@ const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   includeFrame: false,
   framePaddingMm: 5,
   imposeA4: false,
+  impositionPageWidthMm: DEFAULT_IMPOSITION_PAGE_MM.width,
+  impositionPageHeightMm: DEFAULT_IMPOSITION_PAGE_MM.height,
   redCutLinesOnly: false,
+  mirrorArtwork: false,
 };
 
 function App() {
@@ -134,8 +138,8 @@ function App() {
     if (!image || !exportSettings.imposeA4) {
       return undefined;
     }
-    return bitmapToPngDataUrl(image.bitmap);
-  }, [image, exportSettings.imposeA4]);
+    return bitmapToPngDataUrl(image.bitmap, exportSettings.mirrorArtwork);
+  }, [image, exportSettings.imposeA4, exportSettings.mirrorArtwork]);
   // .ai は PDF 生成と画像の PNG 化を伴い、大きな画像では体感できる時間がかかる。
   // 生成中はボタンを止め、二重実行を防ぐ。
   const [exporting, setExporting] = useState(false);
@@ -145,17 +149,19 @@ function App() {
       return;
     }
     try {
-      const svg = generateSvg(
-        result,
-        {
-          ...(embedImageInSvg ? { imageHref: bitmapToPngDataUrl(image.bitmap) } : {}),
-          partGapMm: exportSettings.partGapMm,
-          includeFrame: exportSettings.includeFrame,
-          framePaddingMm: exportSettings.framePaddingMm,
-          imposeA4: exportSettings.imposeA4,
-          redCutLinesOnly: exportSettings.redCutLinesOnly,
-        },
-      );
+      const svg = generateSvg(result, {
+        ...(embedImageInSvg
+          ? { imageHref: bitmapToPngDataUrl(image.bitmap, exportSettings.mirrorArtwork) }
+          : {}),
+        partGapMm: exportSettings.partGapMm,
+        includeFrame: exportSettings.includeFrame,
+        framePaddingMm: exportSettings.framePaddingMm,
+        imposeA4: exportSettings.imposeA4,
+        impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+        impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+        redCutLinesOnly: exportSettings.redCutLinesOnly,
+        mirrorX: exportSettings.mirrorArtwork,
+      });
       downloadBlob(
         new Blob([svg], { type: 'image/svg+xml' }),
         exportFileName(image.fileName, 'svg'),
@@ -177,19 +183,86 @@ function App() {
       try {
         const bytes = await generateAi(
           result,
-          { bytes: await bitmapToPngBytes(image.bitmap) },
+          { bytes: await bitmapToPngBytes(image.bitmap, exportSettings.mirrorArtwork) },
           {
             partGapMm: exportSettings.partGapMm,
             includeFrame: exportSettings.includeFrame,
             framePaddingMm: exportSettings.framePaddingMm,
             imposeA4: exportSettings.imposeA4,
+            impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+            impositionPageHeightMm: exportSettings.impositionPageHeightMm,
             redCutLinesOnly: exportSettings.redCutLinesOnly,
+            mirrorX: exportSettings.mirrorArtwork,
           },
         );
         downloadBlob(
           // .ai の中身は PDF なので MIME も PDF とする（保存名の拡張子が .ai であることが本質）。
           new Blob([bytes as BlobPart], { type: 'application/pdf' }),
           exportFileName(image.fileName, 'ai'),
+        );
+      } catch (cause) {
+        actions.failAnalysis(toUnexpectedError(cause));
+      } finally {
+        setExporting(false);
+      }
+    })();
+  }, [result, image, exportSettings, actions]);
+
+  // カットラインだけの .ai。絵柄画像は含めず、同じ面付け・反転・赤線設定を適用する。
+  const handleExportCutlineAi = useCallback(() => {
+    if (!result || !image) {
+      return;
+    }
+    setExporting(true);
+    void (async () => {
+      try {
+        const bytes = await generateCutlineAi(result, {
+          partGapMm: exportSettings.partGapMm,
+          includeFrame: exportSettings.includeFrame,
+          framePaddingMm: exportSettings.framePaddingMm,
+          imposeA4: exportSettings.imposeA4,
+          impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+          impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+          redCutLinesOnly: exportSettings.redCutLinesOnly,
+          mirrorX: exportSettings.mirrorArtwork,
+        });
+        downloadBlob(
+          new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+          exportFileName(image.fileName, 'ai', '-cutline'),
+        );
+      } catch (cause) {
+        actions.failAnalysis(toUnexpectedError(cause));
+      } finally {
+        setExporting(false);
+      }
+    })();
+  }, [result, image, exportSettings, actions]);
+
+  // 絵柄画像だけの PDF。印刷用にカットラインを含めず、面付け・左右反転は同じ設定で出す。
+  const handleExportImagePdf = useCallback(() => {
+    if (!result || !image) {
+      return;
+    }
+    setExporting(true);
+    void (async () => {
+      try {
+        const bytes = await generateImagePdf(
+          result,
+          { bytes: await bitmapToPngBytes(image.bitmap, exportSettings.mirrorArtwork) },
+          {
+            partGapMm: exportSettings.partGapMm,
+            includeFrame: exportSettings.includeFrame,
+            framePaddingMm: exportSettings.framePaddingMm,
+            imposeA4: exportSettings.imposeA4,
+            impositionPageWidthMm: exportSettings.impositionPageWidthMm,
+            impositionPageHeightMm: exportSettings.impositionPageHeightMm,
+            redCutLinesOnly: exportSettings.redCutLinesOnly,
+            mirrorX: exportSettings.mirrorArtwork,
+          },
+        );
+        downloadBlob(
+          new Blob([bytes as BlobPart], { type: 'application/pdf' }),
+          exportFileName(image.fileName, 'pdf', '-image'),
         );
       } catch (cause) {
         actions.failAnalysis(toUnexpectedError(cause));
@@ -287,6 +360,12 @@ function App() {
               : {})}
             exporting={exporting}
             {...(result ? { onExportSvg: handleExportSvg, onExportAi: handleExportAi } : {})}
+            {...(result
+              ? {
+                  onExportCutlineAi: handleExportCutlineAi,
+                  onExportImagePdf: handleExportImagePdf,
+                }
+              : {})}
           />
         </aside>
       </main>

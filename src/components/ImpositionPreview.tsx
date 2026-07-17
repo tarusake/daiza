@@ -1,4 +1,4 @@
-// A4 面付けプレビュー。
+// 面付けプレビュー。
 //
 // エクスポートと同じ buildExportGeometry を使い、SVG / .ai に出るタイル配置を右パネルで
 // 確認できるようにする。ここで独自に行列数を計算すると出力とプレビューがズレるため、
@@ -7,7 +7,6 @@
 import { useMemo } from 'react';
 
 import {
-  A4_PAGE_MM,
   buildExportGeometry,
   exportColors,
   fmt,
@@ -22,7 +21,10 @@ export interface ImpositionPreviewSettings {
   partGapMm: number;
   includeFrame: boolean;
   framePaddingMm: number;
+  impositionPageWidthMm: number;
+  impositionPageHeightMm: number;
   redCutLinesOnly: boolean;
+  mirrorArtwork: boolean;
 }
 
 export interface ImpositionPreviewProps {
@@ -83,12 +85,19 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
       includeFrame: settings.includeFrame,
       framePaddingMm: settings.framePaddingMm,
       imposeA4: true,
+      impositionPageWidthMm: settings.impositionPageWidthMm,
+      impositionPageHeightMm: settings.impositionPageHeightMm,
+      mirrorX: settings.mirrorArtwork,
     });
   }, [result, imageHref, settings]);
 
   if (!geometry) {
+    const aspectRatio = `${settings.impositionPageWidthMm} / ${settings.impositionPageHeightMm}`;
     return (
-      <div className="bg-muted/30 text-muted-foreground flex aspect-[210/297] items-center justify-center rounded border text-sm">
+      <div
+        className="bg-muted/30 text-muted-foreground flex items-center justify-center rounded border text-sm"
+        style={{ aspectRatio }}
+      >
         —
       </div>
     );
@@ -107,13 +116,13 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
           className="block h-auto w-full"
           viewBox={viewBox}
           role="img"
-          aria-label="A4面付けプレビュー"
+          aria-label="面付けプレビュー"
         >
           <rect
             x={0}
             y={0}
-            width={A4_PAGE_MM.width}
-            height={A4_PAGE_MM.height}
+            width={geometry.viewBox.width}
+            height={geometry.viewBox.height}
             fill="white"
           />
           {geometry.tileOffsets.map((offset, index) => {
@@ -177,7 +186,10 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
       </div>
       <div className="text-muted-foreground flex justify-between text-xs tabular-nums">
         <span>{geometry.tileOffsets.length} 個</span>
-        <span>{geometry.tileRotationDeg}°</span>
+        <span>
+          {fmt(geometry.viewBox.width)} × {fmt(geometry.viewBox.height)} mm /{' '}
+          {geometry.tileRotationDeg}°
+        </span>
       </div>
     </div>
   );

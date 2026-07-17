@@ -36,10 +36,16 @@ export interface SvgExportOptions {
   includeFrame?: boolean;
   /** 枠を付ける場合の図形から枠までの余白(mm)。 */
   framePaddingMm?: number;
-  /** A4 縦置きページへ原寸で配置するか。 */
+  /** 面付けページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** 面付けページ幅(mm)。 */
+  impositionPageWidthMm?: number;
+  /** 面付けページ高さ(mm)。 */
+  impositionPageHeightMm?: number;
   /** カットラインだけを赤で出すか。 */
   redCutLinesOnly?: boolean;
+  /** 書き出し幾何全体を左右反転するか。 */
+  mirrorX?: boolean;
 }
 
 function tilePoint(geometry: ExportGeometry, offset: Point, point: Point): Point {
@@ -115,6 +121,13 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
     ...(options.includeFrame !== undefined ? { includeFrame: options.includeFrame } : {}),
     ...(options.framePaddingMm !== undefined ? { framePaddingMm: options.framePaddingMm } : {}),
     ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
+    ...(options.impositionPageWidthMm !== undefined
+      ? { impositionPageWidthMm: options.impositionPageWidthMm }
+      : {}),
+    ...(options.impositionPageHeightMm !== undefined
+      ? { impositionPageHeightMm: options.impositionPageHeightMm }
+      : {}),
+    ...(options.mirrorX !== undefined ? { mirrorX: options.mirrorX } : {}),
   });
   const { viewBox } = geometry;
   const redCutLinesOnly = options.redCutLinesOnly === true;
