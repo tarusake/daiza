@@ -223,9 +223,12 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
             geometry.tileOffsets.map((offset, index) => {
               const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
               const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
-              const baseCurve = mapCurve(geometry.base!.curve, (p) =>
-                tilePoint(geometry, offset, p),
-              );
+              const baseCurve = geometry.base
+                ? mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p))
+                : null;
+              const holeCenter = geometry.hole
+                ? tilePoint(geometry, offset, geometry.hole.center)
+                : null;
 
               return (
                 <g key={`${offset.x}-${offset.y}-${index}`} fill="none" strokeLinejoin="round">
@@ -245,30 +248,43 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
                     stroke={colors.contour}
                     strokeWidth={strokeWidth}
                   />
-                  {!settings.redCutLinesOnly && (
+                  {!settings.redCutLinesOnly && geometry.neck && geometry.tab && (
                     <>
                       <path
-                        d={rectPathForTile(geometry, offset, geometry.neck!)}
+                        d={rectPathForTile(geometry, offset, geometry.neck)}
                         stroke={colors.slot}
                         strokeWidth={strokeWidth}
                       />
                       <path
-                        d={rectPathForTile(geometry, offset, geometry.tab!)}
+                        d={rectPathForTile(geometry, offset, geometry.tab)}
                         stroke={colors.slot}
                         strokeWidth={strokeWidth}
                       />
                     </>
                   )}
-                  <path
-                    d={curvePathData(baseCurve, fmt)}
-                    stroke={colors.base}
-                    strokeWidth={strokeWidth}
-                  />
-                  <path
-                    d={rectPathForTile(geometry, offset, geometry.baseSlot!)}
-                    stroke={colors.baseSlot}
-                    strokeWidth={strokeWidth}
-                  />
+                  {baseCurve && (
+                    <path
+                      d={curvePathData(baseCurve, fmt)}
+                      stroke={colors.base}
+                      strokeWidth={strokeWidth}
+                    />
+                  )}
+                  {geometry.baseSlot && (
+                    <path
+                      d={rectPathForTile(geometry, offset, geometry.baseSlot)}
+                      stroke={colors.baseSlot}
+                      strokeWidth={strokeWidth}
+                    />
+                  )}
+                  {geometry.hole && holeCenter && (
+                    <circle
+                      cx={holeCenter.x}
+                      cy={holeCenter.y}
+                      r={geometry.hole.radius}
+                      stroke={colors.contour}
+                      strokeWidth={strokeWidth}
+                    />
+                  )}
                   {geometry.frame !== undefined && (
                     <path
                       d={rectPathForTile(geometry, offset, geometry.frame)}

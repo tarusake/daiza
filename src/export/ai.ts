@@ -371,6 +371,9 @@ async function generatePdfBytes(
           borderWidth,
         });
       }
+      if (!geometry.base || !geometry.baseSlot || !geometry.neck || !geometry.tab) {
+        return;
+      }
       const separate = geometry.separatePartsLayout;
       if (separate) {
         const pathFor = (
@@ -388,28 +391,28 @@ async function generatePdfBytes(
         };
         for (const placement of separate.figurePlacements) {
           if (!redCutLinesOnly) {
-            strokePath(pathFor(geometry.neck!, placement, separate.figureBounds), colors.slot);
-            strokePath(pathFor(geometry.tab!, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.neck, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.tab, placement, separate.figureBounds), colors.slot);
           }
         }
         for (const placement of separate.basePlacements) {
-          const basePath = mapCurve(geometry.base!.curve, (p) =>
+          const basePath = mapCurve(geometry.base.curve, (p) =>
             toPt(placePartPoint(p, separate.baseBounds, placement), viewBox),
           );
           strokePath(curvePathData(basePath, fmtPt), colors.base);
-          strokePath(pathFor(geometry.baseSlot!, placement, separate.baseBounds), colors.baseSlot);
+          strokePath(pathFor(geometry.baseSlot, placement, separate.baseBounds), colors.baseSlot);
         }
         return;
       }
       for (const offset of geometry.tileOffsets) {
         // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
-        const basePath = mapCurve(geometry.base!.curve, (p) => toPt(tilePoint(offset, p), viewBox));
+        const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
         strokePath(curvePathData(basePath, fmtPt), colors.base);
         if (!redCutLinesOnly) {
-          strokePath(rectPathForTile(offset, geometry.neck!), colors.slot);
-          strokePath(rectPathForTile(offset, geometry.tab!), colors.slot);
+          strokePath(rectPathForTile(offset, geometry.neck), colors.slot);
+          strokePath(rectPathForTile(offset, geometry.tab), colors.slot);
         }
-        strokePath(rectPathForTile(offset, geometry.baseSlot!), colors.baseSlot);
+        strokePath(rectPathForTile(offset, geometry.baseSlot), colors.baseSlot);
         if (geometry.frame !== undefined) {
           strokePath(rectPathForTile(offset, geometry.frame), colors.frame);
         }
@@ -443,6 +446,14 @@ async function generatePdfBytes(
           closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
           colors.contour,
         );
+        if (geometry.hole) {
+          const center = toPt(tilePoint(offset, geometry.hole.center), viewBox);
+          const radius = geometry.hole.radius * MM_TO_PT;
+          strokePath(
+            `M ${fmtPt(center.x + radius)} ${fmtPt(center.y)} A ${fmtPt(radius)} ${fmtPt(radius)} 0 1 0 ${fmtPt(center.x - radius)} ${fmtPt(center.y)} A ${fmtPt(radius)} ${fmtPt(radius)} 0 1 0 ${fmtPt(center.x + radius)} ${fmtPt(center.y)} Z`,
+            colors.contour,
+          );
+        }
       }
     });
   }

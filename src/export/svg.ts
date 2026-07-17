@@ -149,28 +149,37 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
       closedCurvePathData(contour, fmt, { sharpCorners }),
       `fill="none" stroke="${colors.contour}" ${strokeAttr}`,
     );
-    const slotElements = redCutLinesOnly
+    const slotElements = redCutLinesOnly || !geometry.neck || !geometry.tab
       ? []
       : [
           pathElement(
-            rectPathForTile(geometry, offset, geometry.neck!),
+            rectPathForTile(geometry, offset, geometry.neck),
             `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
           ),
           pathElement(
-            rectPathForTile(geometry, offset, geometry.tab!),
+            rectPathForTile(geometry, offset, geometry.tab),
             `fill="none" stroke="${colors.slot}" ${strokeAttr}`,
           ),
         ];
     // 台座は「台座形状」で選んだ footprint の上面図。矩形以外も曲線コマンドで出力する。
-    const baseCurve = mapCurve(geometry.base!.curve, (p) => tilePoint(geometry, offset, p));
-    const baseEl = pathElement(
-      curvePathData(baseCurve, fmt),
-      `fill="none" stroke="${colors.base}" ${strokeAttr}`,
-    );
-    const baseSlotEl = pathElement(
-      rectPathForTile(geometry, offset, geometry.baseSlot!),
-      `fill="none" stroke="${colors.baseSlot}" ${strokeAttr}`,
-    );
+    const baseEl = geometry.base
+      ? pathElement(
+          curvePathData(mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p)), fmt),
+          `fill="none" stroke="${colors.base}" ${strokeAttr}`,
+        )
+      : undefined;
+    const baseSlotEl = geometry.baseSlot
+      ? pathElement(
+          rectPathForTile(geometry, offset, geometry.baseSlot),
+          `fill="none" stroke="${colors.baseSlot}" ${strokeAttr}`,
+        )
+      : undefined;
+    const holeEl = geometry.hole
+      ? (() => {
+          const center = tilePoint(geometry, offset, geometry.hole.center);
+          return `<circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(geometry.hole.radius)}" fill="none" stroke="${colors.contour}" ${strokeAttr} />`;
+        })()
+      : undefined;
     const frameEl =
       geometry.frame !== undefined
         ? pathElement(
@@ -183,8 +192,9 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
       ...(imageHref !== undefined ? [imageElement(geometry, imageHref, offset)] : []),
       contourEl,
       ...slotElements,
-      baseEl,
-      baseSlotEl,
+      ...(baseEl !== undefined ? [baseEl] : []),
+      ...(baseSlotEl !== undefined ? [baseSlotEl] : []),
+      ...(holeEl !== undefined ? [holeEl] : []),
       ...(frameEl !== undefined ? [frameEl] : []),
     ];
   });

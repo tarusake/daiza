@@ -211,20 +211,80 @@ export function buildExportGeometry(
   // keychain モード：回転済み contour + 穴のみ。
   if (result.keychain) {
     const { keychain } = result;
-    const hole = {
+    let hole = {
       center: toMm(keychain.holeCenterPixel),
       radius: keychain.holeRadiusMm,
     };
-    const bounds = [holeRect(hole), ...(options.includeImage ? [imageRect] : [])];
-    const viewBox = computeViewBox(contourMm, bounds);
+    let keychainContour = contourMm;
+    let keychainImage = imageRect;
+    let frame: RectMm | undefined;
+    const contentRects = [holeRect(hole), ...(options.includeImage ? [keychainImage] : [])];
+    if (options.includeFrame === true) {
+      frame = expandRect(
+        boundsFromGeometry(keychainContour, contentRects),
+        Math.max(0, options.framePaddingMm ?? MARGIN_MM),
+      );
+    }
+
+    let layoutBounds = boundsFromGeometry(keychainContour, [
+      ...contentRects,
+      ...(frame ? [frame] : []),
+    ]);
+    if (options.mirrorX === true) {
+      keychainContour = keychainContour.map((point) => mirrorPointX(point, layoutBounds));
+      keychainImage = mirrorRectX(keychainImage, layoutBounds);
+      hole = { ...hole, center: mirrorPointX(hole.center, layoutBounds) };
+      if (frame) frame = mirrorRectX(frame, layoutBounds);
+    }
+
+    let tileBounds = layoutBounds;
+    let tileRotationDeg: 0 | 90 = 0;
+    let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+    const pageSize = normalizedPageSize(options);
+    if (options.imposeA4 === true) {
+      const dx = -layoutBounds.x;
+      const dy = -layoutBounds.y;
+      keychainContour = keychainContour.map((point) => translatePoint(point, dx, dy));
+      keychainImage = translateRect(keychainImage, dx, dy);
+      hole = { ...hole, center: translatePoint(hole.center, dx, dy) };
+      if (frame) frame = translateRect(frame, dx, dy);
+      layoutBounds = translateRect(layoutBounds, dx, dy);
+
+      const gapMm = Math.max(0, options.impositionGapMm ?? 5);
+      const normal = computeImpositionTileLayout(
+        layoutBounds.width,
+        layoutBounds.height,
+        pageSize,
+        gapMm,
+      );
+      const rotated = computeImpositionTileLayout(
+        layoutBounds.height,
+        layoutBounds.width,
+        pageSize,
+        gapMm,
+      );
+      tileRotationDeg = rotated.count > normal.count ? 90 : 0;
+      tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
+      tileBounds = layoutBounds;
+    }
+
+    const viewBox =
+      options.imposeA4 === true
+        ? { x: 0, y: 0, width: pageSize.width, height: pageSize.height }
+        : computeViewBox(keychainContour, [
+            holeRect(hole),
+            ...(options.includeImage ? [keychainImage] : []),
+            ...(frame ? [frame] : []),
+          ]);
     return {
-      contour: contourMm,
+      contour: keychainContour,
       sharpCorners: [],
       hole,
-      image: imageRect,
-      tileBounds: viewBox,
-      tileRotationDeg: 0,
-      tileOffsets: [{ x: 0, y: 0 }],
+      image: keychainImage,
+      ...(frame ? { frame } : {}),
+      tileBounds,
+      tileRotationDeg,
+      tileOffsets,
       viewBox,
     };
   }
