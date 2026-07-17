@@ -20,6 +20,8 @@ export interface ExportSettings {
   includeFrame: boolean;
   framePaddingMm: number;
   imposeA4: boolean;
+  separatePartsImposition: boolean;
+  impositionGapMm: number;
   impositionPageWidthMm: number;
   impositionPageHeightMm: number;
   redCutLinesOnly: boolean;
@@ -148,22 +150,84 @@ export function ExportPanel({
         </div>
 
         {settings.imposeA4 && (
-          <div className="grid grid-cols-2 gap-3">
+          <>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="export-separate-parts-imposition"
+                checked={settings.separatePartsImposition}
+                onCheckedChange={(checked) =>
+                  updateSettings({ separatePartsImposition: checked === true })
+                }
+                disabled={exporting}
+              />
+              <Label
+                htmlFor="export-separate-parts-imposition"
+                className="text-muted-foreground text-sm font-normal"
+              >
+                絵柄と台座を別々に面付けする
+              </Label>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="export-imposition-page-width">面付け幅</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="export-imposition-page-width"
+                    type="number"
+                    inputMode="decimal"
+                    min={1}
+                    max={2000}
+                    step={1}
+                    value={settings.impositionPageWidthMm}
+                    onChange={(event) => {
+                      const next = event.target.valueAsNumber;
+                      if (!Number.isNaN(next)) {
+                        updateSettings({ impositionPageWidthMm: Math.max(1, next) });
+                      }
+                    }}
+                    disabled={exporting}
+                  />
+                  <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="export-imposition-page-height">面付け高さ</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="export-imposition-page-height"
+                    type="number"
+                    inputMode="decimal"
+                    min={1}
+                    max={2000}
+                    step={1}
+                    value={settings.impositionPageHeightMm}
+                    onChange={(event) => {
+                      const next = event.target.valueAsNumber;
+                      if (!Number.isNaN(next)) {
+                        updateSettings({ impositionPageHeightMm: Math.max(1, next) });
+                      }
+                    }}
+                    disabled={exporting}
+                  />
+                  <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
+                </div>
+              </div>
+            </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="export-imposition-page-width">面付け幅</Label>
+              <Label htmlFor="export-imposition-gap">面付けの隙間・外周余白</Label>
               <div className="flex items-center gap-2">
                 <Input
-                  id="export-imposition-page-width"
+                  id="export-imposition-gap"
                   type="number"
                   inputMode="decimal"
-                  min={1}
-                  max={2000}
-                  step={1}
-                  value={settings.impositionPageWidthMm}
+                  min={0}
+                  max={100}
+                  step={0.5}
+                  value={settings.impositionGapMm}
                   onChange={(event) => {
                     const next = event.target.valueAsNumber;
                     if (!Number.isNaN(next)) {
-                      updateSettings({ impositionPageWidthMm: Math.max(1, next) });
+                      updateSettings({ impositionGapMm: Math.max(0, next) });
                     }
                   }}
                   disabled={exporting}
@@ -171,29 +235,7 @@ export function ExportPanel({
                 <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
               </div>
             </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="export-imposition-page-height">面付け高さ</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  id="export-imposition-page-height"
-                  type="number"
-                  inputMode="decimal"
-                  min={1}
-                  max={2000}
-                  step={1}
-                  value={settings.impositionPageHeightMm}
-                  onChange={(event) => {
-                    const next = event.target.valueAsNumber;
-                    if (!Number.isNaN(next)) {
-                      updateSettings({ impositionPageHeightMm: Math.max(1, next) });
-                    }
-                  }}
-                  disabled={exporting}
-                />
-                <span className="text-muted-foreground w-8 shrink-0 text-sm">mm</span>
-              </div>
-            </div>
-          </div>
+          </>
         )}
 
         <ImpositionPreview

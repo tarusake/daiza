@@ -10,8 +10,10 @@ import {
   buildExportGeometry,
   exportColors,
   fmt,
+  placePartPoint,
   strokeWidthMm,
   type ExportGeometry,
+  type PartPlacement,
   type RectMm,
 } from '@/export/geometry';
 import type { AnalysisResult, Point } from '@/model/types';
@@ -22,6 +24,8 @@ export interface ImpositionPreviewSettings {
   includeFrame: boolean;
   framePaddingMm: number;
   imposeA4: boolean;
+  separatePartsImposition: boolean;
+  impositionGapMm: number;
   impositionPageWidthMm: number;
   impositionPageHeightMm: number;
   redCutLinesOnly: boolean;
@@ -64,6 +68,16 @@ function rectPathForTile(geometry: ExportGeometry, offset: Point, rect: RectMm):
   );
 }
 
+function rectPathForPlacement(rect: RectMm, bounds: RectMm, placement: PartPlacement): string {
+  const corners = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+    { x: rect.x, y: rect.y + rect.height },
+  ].map((p) => placePartPoint(p, bounds, placement));
+  return `M ${fmt(corners[0]!.x)} ${fmt(corners[0]!.y)} L ${fmt(corners[1]!.x)} ${fmt(corners[1]!.y)} L ${fmt(corners[2]!.x)} ${fmt(corners[2]!.y)} L ${fmt(corners[3]!.x)} ${fmt(corners[3]!.y)} Z`;
+}
+
 function imageTransform(geometry: ExportGeometry, offset: Point): string {
   if (geometry.tileRotationDeg === 0) {
     return `translate(${fmt(offset.x)} ${fmt(offset.y)})`;
@@ -86,6 +100,8 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
       includeFrame: settings.includeFrame,
       framePaddingMm: settings.framePaddingMm,
       imposeA4: settings.imposeA4,
+      separatePartsImposition: settings.separatePartsImposition,
+      impositionGapMm: settings.impositionGapMm,
       impositionPageWidthMm: settings.impositionPageWidthMm,
       impositionPageHeightMm: settings.impositionPageHeightMm,
       mirrorX: settings.mirrorArtwork,
@@ -137,67 +153,136 @@ export function ImpositionPreview({ result, settings, imageHref }: ImpositionPre
               strokeWidth={strokeWidth}
             />
           )}
-          {geometry.tileOffsets.map((offset, index) => {
-            const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
-            const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
-            const baseCurve = mapCurve(geometry.base.curve, (p) => tilePoint(geometry, offset, p));
+          {geometry.separatePartsLayout && (
+            <>
+              {geometry.separatePartsLayout.figurePlacements.map((placement, index) => {
+                const bounds = geometry.separatePartsLayout!.figureBounds;
+                const contour = geometry.contour.map((p) => placePartPoint(p, bounds, placement));
+                const sharpCorners = geometry.sharpCorners.map((p) =>
+                  placePartPoint(p, bounds, placement),
+                );
+                const imageTransformValue =
+                  placement.rotationDeg === 0
+                    ? `translate(${fmt(placement.x - bounds.x)} ${fmt(placement.y - bounds.y)})`
+                    : `matrix(0 1 -1 0 ${fmt(placement.x + bounds.height + bounds.y)} ${fmt(placement.y - bounds.x)})`;
+                return (
+                  <g key={`figure-${index}`} fill="none" strokeLinejoin="round">
+                    {imageHref !== undefined && (
+                      <image
+                        {...geometry.image}
+                        href={imageHref}
+                        preserveAspectRatio="none"
+                        transform={imageTransformValue}
+                      />
+                    )}
+                    <path
+                      d={closedCurvePathData(contour, fmt, { sharpCorners })}
+                      stroke={colors.contour}
+                      strokeWidth={strokeWidth}
+                    />
+                    {!settings.redCutLinesOnly && (
+                      <>
+                        <path
+                          d={rectPathForPlacement(geometry.neck, bounds, placement)}
+                          stroke={colors.slot}
+                          strokeWidth={strokeWidth}
+                        />
+                        <path
+                          d={rectPathForPlacement(geometry.tab, bounds, placement)}
+                          stroke={colors.slot}
+                          strokeWidth={strokeWidth}
+                        />
+                      </>
+                    )}
+                  </g>
+                );
+              })}
+              {geometry.separatePartsLayout.basePlacements.map((placement, index) => {
+                const bounds = geometry.separatePartsLayout!.baseBounds;
+                const baseCurve = mapCurve(geometry.base.curve, (p) =>
+                  placePartPoint(p, bounds, placement),
+                );
+                return (
+                  <g key={`base-${index}`} fill="none" strokeLinejoin="round">
+                    <path
+                      d={curvePathData(baseCurve, fmt)}
+                      stroke={colors.base}
+                      strokeWidth={strokeWidth}
+                    />
+                    <path
+                      d={rectPathForPlacement(geometry.baseSlot, bounds, placement)}
+                      stroke={colors.baseSlot}
+                      strokeWidth={strokeWidth}
+                    />
+                  </g>
+                );
+              })}
+            </>
+          )}
+          {!geometry.separatePartsLayout &&
+            geometry.tileOffsets.map((offset, index) => {
+              const contour = geometry.contour.map((p) => tilePoint(geometry, offset, p));
+              const sharpCorners = geometry.sharpCorners.map((p) => tilePoint(geometry, offset, p));
+              const baseCurve = mapCurve(geometry.base.curve, (p) =>
+                tilePoint(geometry, offset, p),
+              );
 
-            return (
-              <g key={`${offset.x}-${offset.y}-${index}`} fill="none" strokeLinejoin="round">
-                {imageHref !== undefined && (
-                  <image
-                    href={imageHref}
-                    x={geometry.image.x}
-                    y={geometry.image.y}
-                    width={geometry.image.width}
-                    height={geometry.image.height}
-                    preserveAspectRatio="none"
-                    transform={imageTransform(geometry, offset)}
-                  />
-                )}
-                <path
-                  d={closedCurvePathData(contour, fmt, { sharpCorners })}
-                  stroke={colors.contour}
-                  strokeWidth={strokeWidth}
-                />
-                {!settings.redCutLinesOnly && (
-                  <>
-                    <path
-                      d={rectPathForTile(geometry, offset, geometry.neck)}
-                      stroke={colors.slot}
-                      strokeWidth={strokeWidth}
+              return (
+                <g key={`${offset.x}-${offset.y}-${index}`} fill="none" strokeLinejoin="round">
+                  {imageHref !== undefined && (
+                    <image
+                      href={imageHref}
+                      x={geometry.image.x}
+                      y={geometry.image.y}
+                      width={geometry.image.width}
+                      height={geometry.image.height}
+                      preserveAspectRatio="none"
+                      transform={imageTransform(geometry, offset)}
                     />
-                    <path
-                      d={rectPathForTile(geometry, offset, geometry.tab)}
-                      stroke={colors.slot}
-                      strokeWidth={strokeWidth}
-                    />
-                  </>
-                )}
-                <path
-                  d={curvePathData(baseCurve, fmt)}
-                  stroke={colors.base}
-                  strokeWidth={strokeWidth}
-                />
-                <path
-                  d={rectPathForTile(geometry, offset, geometry.baseSlot)}
-                  stroke={colors.baseSlot}
-                  strokeWidth={strokeWidth}
-                />
-                {geometry.frame !== undefined && (
+                  )}
                   <path
-                    d={rectPathForTile(geometry, offset, geometry.frame)}
-                    stroke={colors.frame}
+                    d={closedCurvePathData(contour, fmt, { sharpCorners })}
+                    stroke={colors.contour}
                     strokeWidth={strokeWidth}
                   />
-                )}
-              </g>
-            );
-          })}
+                  {!settings.redCutLinesOnly && (
+                    <>
+                      <path
+                        d={rectPathForTile(geometry, offset, geometry.neck)}
+                        stroke={colors.slot}
+                        strokeWidth={strokeWidth}
+                      />
+                      <path
+                        d={rectPathForTile(geometry, offset, geometry.tab)}
+                        stroke={colors.slot}
+                        strokeWidth={strokeWidth}
+                      />
+                    </>
+                  )}
+                  <path
+                    d={curvePathData(baseCurve, fmt)}
+                    stroke={colors.base}
+                    strokeWidth={strokeWidth}
+                  />
+                  <path
+                    d={rectPathForTile(geometry, offset, geometry.baseSlot)}
+                    stroke={colors.baseSlot}
+                    strokeWidth={strokeWidth}
+                  />
+                  {geometry.frame !== undefined && (
+                    <path
+                      d={rectPathForTile(geometry, offset, geometry.frame)}
+                      stroke={colors.frame}
+                      strokeWidth={strokeWidth}
+                    />
+                  )}
+                </g>
+              );
+            })}
         </svg>
       </div>
       <div className="text-muted-foreground flex justify-between text-xs tabular-nums">
-        <span>{geometry.tileOffsets.length} 個</span>
+        <span>{geometry.separatePartsLayout?.setCount ?? geometry.tileOffsets.length} セット</span>
         <span>
           {fmt(geometry.viewBox.width)} × {fmt(geometry.viewBox.height)} mm /{' '}
           {geometry.tileRotationDeg}°

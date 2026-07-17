@@ -15,7 +15,12 @@
 
 import type { PDFName as PDFNameObject } from 'pdf-lib';
 
-import { buildExportGeometry, exportColors, strokeWidthMm } from '@/export/geometry';
+import {
+  buildExportGeometry,
+  exportColors,
+  placePartPoint,
+  strokeWidthMm,
+} from '@/export/geometry';
 import type { ExportGeometry, RectMm } from '@/export/geometry';
 import type { AnalysisResult, Point } from '@/model/types';
 import { closedCurvePathData, curvePathData, mapCurve } from '@/utils/curve';
@@ -38,6 +43,9 @@ export interface AiExportOptions {
   framePaddingMm?: number;
   /** 面付けページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** 絵柄と台座を独立して面付けする。 */
+  separatePartsImposition?: boolean;
+  impositionGapMm?: number;
   /** 面付けページ幅(mm)。 */
   impositionPageWidthMm?: number;
   /** 面付けページ高さ(mm)。 */
@@ -159,6 +167,10 @@ async function generatePdfBytes(
     ...(options.includeFrame !== undefined ? { includeFrame: options.includeFrame } : {}),
     ...(options.framePaddingMm !== undefined ? { framePaddingMm: options.framePaddingMm } : {}),
     ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
+    ...(options.separatePartsImposition !== undefined
+      ? { separatePartsImposition: options.separatePartsImposition }
+      : {}),
+    ...(options.impositionGapMm !== undefined ? { impositionGapMm: options.impositionGapMm } : {}),
     ...(options.impositionPageWidthMm !== undefined
       ? { impositionPageWidthMm: options.impositionPageWidthMm }
       : {}),
@@ -289,6 +301,37 @@ async function generatePdfBytes(
   if (mode.includeArtwork && png !== null) {
     const embedded = await doc.embedPng(png.bytes);
     inLayer('artwork', () => {
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        for (const placement of separate.figurePlacements) {
+          const corners = [
+            { x: geometry.image.x, y: geometry.image.y },
+            {
+              x: geometry.image.x + geometry.image.width,
+              y: geometry.image.y + geometry.image.height,
+            },
+          ].map((p) => placePartPoint(p, separate.figureBounds, placement));
+          const x = Math.min(corners[0]!.x, corners[1]!.x) * MM_TO_PT;
+          const top = Math.min(corners[0]!.y, corners[1]!.y) * MM_TO_PT;
+          if (placement.rotationDeg === 90) {
+            page.drawImage(embedded, {
+              x,
+              y: pageHeight - top,
+              width: geometry.image.width * MM_TO_PT,
+              height: geometry.image.height * MM_TO_PT,
+              rotate: degrees(-90),
+            });
+          } else {
+            page.drawImage(embedded, {
+              x,
+              y: pageHeight - top - geometry.image.height * MM_TO_PT,
+              width: geometry.image.width * MM_TO_PT,
+              height: geometry.image.height * MM_TO_PT,
+            });
+          }
+        }
+        return;
+      }
       for (const offset of geometry.tileOffsets) {
         const imageBounds = rectBoundsForTile(offset, geometry.image);
         const imageRect = rectToPt(imageBounds, viewBox);
@@ -328,6 +371,36 @@ async function generatePdfBytes(
           borderWidth,
         });
       }
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        const pathFor = (
+          rect: RectMm,
+          placement: (typeof separate.figurePlacements)[number],
+          bounds: RectMm,
+        ) => {
+          const corners = [
+            { x: rect.x, y: rect.y },
+            { x: rect.x + rect.width, y: rect.y },
+            { x: rect.x + rect.width, y: rect.y + rect.height },
+            { x: rect.x, y: rect.y + rect.height },
+          ].map((p) => toPt(placePartPoint(p, bounds, placement), viewBox));
+          return `M ${fmtPt(corners[0]!.x)} ${fmtPt(corners[0]!.y)} L ${fmtPt(corners[1]!.x)} ${fmtPt(corners[1]!.y)} L ${fmtPt(corners[2]!.x)} ${fmtPt(corners[2]!.y)} L ${fmtPt(corners[3]!.x)} ${fmtPt(corners[3]!.y)} Z`;
+        };
+        for (const placement of separate.figurePlacements) {
+          if (!redCutLinesOnly) {
+            strokePath(pathFor(geometry.neck, placement, separate.figureBounds), colors.slot);
+            strokePath(pathFor(geometry.tab, placement, separate.figureBounds), colors.slot);
+          }
+        }
+        for (const placement of separate.basePlacements) {
+          const basePath = mapCurve(geometry.base.curve, (p) =>
+            toPt(placePartPoint(p, separate.baseBounds, placement), viewBox),
+          );
+          strokePath(curvePathData(basePath, fmtPt), colors.base);
+          strokePath(pathFor(geometry.baseSlot, placement, separate.baseBounds), colors.baseSlot);
+        }
+        return;
+      }
       for (const offset of geometry.tileOffsets) {
         // 台座は footprint の曲線パス（SVG と同一の幾何）。矩形以外もベジェのまま出す。
         const basePath = mapCurve(geometry.base.curve, (p) => toPt(tilePoint(offset, p), viewBox));
@@ -347,6 +420,22 @@ async function generatePdfBytes(
     // Illustrator 上でもアンカー付きのパスとして編集できる。差込部の肩（首部とツメの接合部）
     // だけは丸めず直角のまま出す。除外点も contour と同じ写像を通すことで座標一致を保つ。
     inLayer('cutline', () => {
+      const separate = geometry.separatePartsLayout;
+      if (separate) {
+        for (const placement of separate.figurePlacements) {
+          const contourPt = geometry.contour.map((p) =>
+            toPt(placePartPoint(p, separate.figureBounds, placement), viewBox),
+          );
+          const sharpPt = geometry.sharpCorners.map((p) =>
+            toPt(placePartPoint(p, separate.figureBounds, placement), viewBox),
+          );
+          strokePath(
+            closedCurvePathData(contourPt, fmtPt, { sharpCorners: sharpPt }),
+            colors.contour,
+          );
+        }
+        return;
+      }
       for (const offset of geometry.tileOffsets) {
         const contourPt = geometry.contour.map((p) => toPt(tilePoint(offset, p), viewBox));
         const sharpPt = geometry.sharpCorners.map((p) => toPt(tilePoint(offset, p), viewBox));

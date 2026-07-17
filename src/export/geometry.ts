@@ -64,6 +64,28 @@ export interface RectMm {
   height: number;
 }
 
+export interface PartPlacement {
+  x: number;
+  y: number;
+  rotationDeg: 0 | 90;
+}
+
+export interface SeparatePartsLayout {
+  figureBounds: RectMm;
+  baseBounds: RectMm;
+  figurePlacements: readonly PartPlacement[];
+  basePlacements: readonly PartPlacement[];
+  setCount: number;
+}
+
+export function placePartPoint(point: Point, bounds: RectMm, placement: PartPlacement): Point {
+  const localX = point.x - bounds.x;
+  const localY = point.y - bounds.y;
+  return placement.rotationDeg === 0
+    ? { x: placement.x + localX, y: placement.y + localY }
+    : { x: placement.x + bounds.height - localY, y: placement.y + localX };
+}
+
 /**
  * 台座 footprint（上面図の外形）を書き出し座標系(mm)へ写したもの。
  *
@@ -114,6 +136,8 @@ export interface ExportGeometry {
   tileRotationDeg: 0 | 90;
   /** 面付け時の複製オフセット。通常出力では [{ x: 0, y: 0 }] の 1 要素。 */
   tileOffsets: readonly Point[];
+  /** 絵柄・台座を独立面付けする場合の配置。 */
+  separatePartsLayout?: SeparatePartsLayout;
   /** 全要素を包む外接矩形に余白を足した領域（mm）。 */
   viewBox: RectMm;
 }
@@ -139,6 +163,10 @@ export interface ExportGeometryOptions {
   framePaddingMm?: number;
   /** 面付けページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  /** 面付け時、絵柄と台座を独立配置して同数セットを最大化する。 */
+  separatePartsImposition?: boolean;
+  /** パーツ間の隙間、および面付け外周からの余白(mm)。 */
+  impositionGapMm?: number;
   /** 面付けページ幅(mm)。未指定なら A4 幅。 */
   impositionPageWidthMm?: number;
   /** 面付けページ高さ(mm)。未指定なら A4 高さ。 */
@@ -271,15 +299,41 @@ export function buildExportGeometry(
   let tileBounds = layoutBounds;
   let tileRotationDeg: 0 | 90 = 0;
   let tileOffsets: Point[] = [{ x: 0, y: 0 }];
+  let separatePartsLayout: SeparatePartsLayout | undefined;
   const pageSize = normalizedPageSize(options);
-  if (options.imposeA4 === true) {
+  const impositionGapMm = Math.max(0, options.impositionGapMm ?? 5);
+  if (options.imposeA4 === true && options.separatePartsImposition === true) {
+    const figureBounds = boundsFromGeometry(geometry.contour, [
+      geometry.neck,
+      geometry.tab,
+      ...(options.includeImage ? [geometry.image] : []),
+    ]);
+    const baseBounds = boundsFromGeometry(geometry.base.outline, [geometry.baseSlot]);
+    separatePartsLayout = computeSeparatePartsLayout(
+      figureBounds,
+      baseBounds,
+      geometry.base.outline,
+      pageSize,
+      impositionGapMm,
+    );
+  } else if (options.imposeA4 === true) {
     const a4MarginMm = 0;
     const dx = a4MarginMm - layoutBounds.x;
     const dy = a4MarginMm - layoutBounds.y;
     geometry = translateExportGeometry(geometry, dx, dy);
     layoutBounds = translateRect(layoutBounds, dx, dy);
-    const normal = computeImpositionTileLayout(layoutBounds.width, layoutBounds.height, pageSize);
-    const rotated = computeImpositionTileLayout(layoutBounds.height, layoutBounds.width, pageSize);
+    const normal = computeImpositionTileLayout(
+      layoutBounds.width,
+      layoutBounds.height,
+      pageSize,
+      impositionGapMm,
+    );
+    const rotated = computeImpositionTileLayout(
+      layoutBounds.height,
+      layoutBounds.width,
+      pageSize,
+      impositionGapMm,
+    );
     tileRotationDeg = rotated.count > normal.count ? 90 : 0;
     tileOffsets = tileRotationDeg === 90 ? rotated.offsets : normal.offsets;
     tileBounds = layoutBounds;
@@ -292,10 +346,132 @@ export function buildExportGeometry(
     tileBounds,
     tileRotationDeg,
     tileOffsets,
+    ...(separatePartsLayout ? { separatePartsLayout } : {}),
     viewBox:
       options.imposeA4 === true
         ? { x: 0, y: 0, width: pageSize.width, height: pageSize.height }
         : computeViewBox(geometry.contour, bounds),
+  };
+}
+
+function computeSeparatePartsLayout(
+  figureBounds: RectMm,
+  baseBounds: RectMm,
+  baseOutline: readonly Point[],
+  page: { width: number; height: number },
+  gapMm: number,
+): SeparatePartsLayout {
+  type Candidate = { count: number; figures: PartPlacement[]; bases: PartPlacement[] };
+  let best: Candidate = { count: 0, figures: [], bases: [] };
+  const orientations: readonly (0 | 90)[] = [0, 90];
+  const size = (bounds: RectMm, rotation: 0 | 90) =>
+    rotation === 0
+      ? { width: bounds.width, height: bounds.height }
+      : { width: bounds.height, height: bounds.width };
+  const grid = (
+    region: RectMm,
+    item: { width: number; height: number },
+    rotationDeg: 0 | 90,
+    gapX: number,
+    gapY: number,
+  ): PartPlacement[] => {
+    const columns = Math.floor((region.width + gapX) / (item.width + gapX));
+    const rows = Math.floor((region.height + gapY) / (item.height + gapY));
+    if (columns < 1 || rows < 1) return [];
+    const result: PartPlacement[] = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        result.push({
+          x: region.x + column * (item.width + gapX),
+          y: region.y + row * (item.height + gapY),
+          rotationDeg,
+        });
+      }
+    }
+    return result;
+  };
+
+  // bbox の左右／上下それぞれに直線区間がある方向だけ、台座同士を密着可能にする。
+  const tolerance = Math.max(baseBounds.width, baseBounds.height) * 1e-6;
+  const hasEdge = (axis: 'x' | 'y', value: number): boolean =>
+    baseOutline.some((point, index) => {
+      const next = baseOutline[(index + 1) % baseOutline.length];
+      return (
+        next !== undefined &&
+        Math.abs(point[axis] - value) <= tolerance &&
+        Math.abs(next[axis] - value) <= tolerance &&
+        Math.hypot(next.x - point.x, next.y - point.y) > tolerance
+      );
+    });
+  const touchX = hasEdge('x', baseBounds.x) && hasEdge('x', baseBounds.x + baseBounds.width);
+  const touchY = hasEdge('y', baseBounds.y) && hasEdge('y', baseBounds.y + baseBounds.height);
+  const usable: RectMm = {
+    x: gapMm,
+    y: gapMm,
+    width: Math.max(0, page.width - gapMm * 2),
+    height: Math.max(0, page.height - gapMm * 2),
+  };
+
+  for (const figureRotation of orientations) {
+    for (const baseRotation of orientations) {
+      const fs = size(figureBounds, figureRotation);
+      const bs = size(baseBounds, baseRotation);
+      const baseGapX = (baseRotation === 0 ? touchX : touchY) ? 0 : gapMm;
+      const baseGapY = (baseRotation === 0 ? touchY : touchX) ? 0 : gapMm;
+      // 縦分割：左に絵柄、右に台座。分割線を絵柄の列境界で全探索する。
+      for (
+        let columns = 1;
+        columns * fs.width + (columns - 1) * gapMm < usable.width;
+        columns += 1
+      ) {
+        const figureWidth = columns * fs.width + (columns - 1) * gapMm;
+        const figures = grid(
+          { x: usable.x, y: usable.y, width: figureWidth, height: usable.height },
+          fs,
+          figureRotation,
+          gapMm,
+          gapMm,
+        );
+        const baseX = usable.x + figureWidth + gapMm;
+        const bases = grid(
+          { x: baseX, y: usable.y, width: usable.x + usable.width - baseX, height: usable.height },
+          bs,
+          baseRotation,
+          baseGapX,
+          baseGapY,
+        );
+        const count = Math.min(figures.length, bases.length);
+        if (count > best.count) best = { count, figures, bases };
+      }
+      // 横分割：上に絵柄、下に台座。
+      for (let rows = 1; rows * fs.height + (rows - 1) * gapMm < usable.height; rows += 1) {
+        const figureHeight = rows * fs.height + (rows - 1) * gapMm;
+        const figures = grid(
+          { x: usable.x, y: usable.y, width: usable.width, height: figureHeight },
+          fs,
+          figureRotation,
+          gapMm,
+          gapMm,
+        );
+        const baseY = usable.y + figureHeight + gapMm;
+        const bases = grid(
+          { x: usable.x, y: baseY, width: usable.width, height: usable.y + usable.height - baseY },
+          bs,
+          baseRotation,
+          baseGapX,
+          baseGapY,
+        );
+        const count = Math.min(figures.length, bases.length);
+        if (count > best.count) best = { count, figures, bases };
+      }
+    }
+  }
+  return {
+    figureBounds,
+    baseBounds,
+    figurePlacements: best.figures.slice(0, best.count),
+    basePlacements: best.bases.slice(0, best.count),
+    setCount: best.count,
   };
 }
 
@@ -382,13 +558,14 @@ function computeImpositionTileLayout(
   tileWidthMm: number,
   tileHeightMm: number,
   pageSize: { width: number; height: number },
+  gapMm: number,
 ): { count: number; offsets: Point[] } {
   if (tileWidthMm <= 0 || tileHeightMm <= 0) {
     return { count: 1, offsets: [{ x: 0, y: 0 }] };
   }
 
-  const pageMarginMm = 0;
-  const gutterMm = 0;
+  const pageMarginMm = gapMm;
+  const gutterMm = gapMm;
   const usableWidth = pageSize.width - pageMarginMm * 2;
   const usableHeight = pageSize.height - pageMarginMm * 2;
   const columns = Math.max(1, Math.floor((usableWidth + gutterMm) / (tileWidthMm + gutterMm)));

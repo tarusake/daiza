@@ -38,6 +38,7 @@ export interface SvgExportOptions {
   framePaddingMm?: number;
   /** 面付けページへ原寸で配置するか。 */
   imposeA4?: boolean;
+  impositionGapMm?: number;
   /** 面付けページ幅(mm)。 */
   impositionPageWidthMm?: number;
   /** 面付けページ高さ(mm)。 */
@@ -121,6 +122,7 @@ export function generateSvg(result: AnalysisResult, options: SvgExportOptions = 
     ...(options.includeFrame !== undefined ? { includeFrame: options.includeFrame } : {}),
     ...(options.framePaddingMm !== undefined ? { framePaddingMm: options.framePaddingMm } : {}),
     ...(options.imposeA4 !== undefined ? { imposeA4: options.imposeA4 } : {}),
+    ...(options.impositionGapMm !== undefined ? { impositionGapMm: options.impositionGapMm } : {}),
     ...(options.impositionPageWidthMm !== undefined
       ? { impositionPageWidthMm: options.impositionPageWidthMm }
       : {}),
